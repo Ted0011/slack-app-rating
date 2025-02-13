@@ -7,6 +7,11 @@ const app = new App({
   signingSecret: process.env.SLACK_SIGNING_SECRET
 });
 
+(async () => {
+	await app.start (process.env.PORT || 3000);
+	console.log('⚡️ Bolt app is running!');
+})();
+
 // Slash command handler
 app.command('/rate', async ({ ack, body, client }) => {
   await ack();
