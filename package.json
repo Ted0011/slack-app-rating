@@ -8,7 +8,8 @@
   },
   "dependencies": {
     "@slack/bolt": "^3.22.0",
-    "dotenv": "^16.4.7"
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
   },
   "author": "SUMAN GHORASHINE",
   "license": "APACHE-2"

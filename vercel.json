@@ -8,8 +8,12 @@
   ],
   "routes": [
     {
+      "src": "/slack/rate",
+      "dest": "/rating.js"
+    },
+    {
       "src": "/(.*)",
-      "dest": "/"
+      "dest": "/rating.js"
     }
   ]
 }

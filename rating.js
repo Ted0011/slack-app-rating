@@ -1,16 +1,29 @@
 require('dotenv').config();
-
 const { App } = require('@slack/bolt');
+const express = require('express');
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET
 });
 
+// Add Express for root route handling
+const expressApp = express();
+expressApp.use(express.json());
+
+// Root route handler
+expressApp.get('/', (req, res) => {
+  res.send('⚡️ Bolt app is running!');
+});
+
+// Start Bolt app
 (async () => {
-	await app.start (process.env.PORT || 3000);
-	console.log('⚡️ Bolt app is running!');
+  await app.start(process.env.PORT || 3000);
+  console.log('⚡️ Bolt app is running!');
 })();
+
+// Attach Bolt's receiver to Express
+expressApp.use(app.receiver.router);
 
 // Slash command handler
 app.command('/rate', async ({ ack, body, client }) => {
@@ -75,4 +88,9 @@ app.view('rating_modal', async ({ ack, view, body }) => {
     channel: reviewee,
     text: `<@${reviewer}> gave you ${rating} stars: ${message}`
   });
+});
+
+// Start Express server
+expressApp.listen(process.env.PORT || 3000, () => {
+  console.log('Express server is running!');
 });
