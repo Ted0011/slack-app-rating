@@ -31,7 +31,7 @@ expressApp.post('/slack/rate', async (req, res) => {
       throw new Error('Invalid payload: Missing required fields');
     }
 
-    // Extract user mention from the `text` field
+    // Extract user mention from the `text` field (e.g., @username -> U123456)
     const reviewee = payload.text.trim().replace(/^<@|>$/g, '');  // Remove <@ and > to extract the user ID
 
     // Acknowledge the request immediately
