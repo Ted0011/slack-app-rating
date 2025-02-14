@@ -23,6 +23,7 @@ expressApp.post('/slack/rate', async (req, res) => {
     const payload = req.body;
 
     // Log the incoming payload
+    console.log('Incoming Request:', req);
     console.log('Incoming payload:', JSON.stringify(payload, null, 2));
 
     // Validate the payload
