@@ -2,33 +2,49 @@ require('dotenv').config();
 const { App } = require('@slack/bolt');
 const express = require('express');
 
+// Initialize Express
+const expressApp = express();
+expressApp.use(express.json());
+
+// Initialize Bolt
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET
 });
-
-// Add Express for root route handling
-const expressApp = express();
-expressApp.use(express.json());
 
 // Root route handler
 expressApp.get('/', (req, res) => {
   res.send('⚡️ Bolt app is running!');
 });
 
-// Start Bolt app
-(async () => {
-  await app.start(process.env.PORT || 3000);
-  console.log('⚡️ Bolt app is running!');
-})();
+// Define the /slack/rate route explicitly
+expressApp.post('/slack/rate', async (req, res) => {
+  try {
+    const payload = req.body;
 
-// Attach Bolt's receiver to Express
-expressApp.use(app.receiver.router);
+    // Log the incoming payload
+    console.log('Incoming payload:', JSON.stringify(payload, null, 2));
+
+    // Validate the payload
+    if (!payload.command || !payload.trigger_id) {
+      throw new Error('Invalid payload: Missing required fields');
+    }
+
+    // Acknowledge the request
+    res.status(200).send();
+
+    // Handle the slash command
+    await app.command('/rate', { ack: () => {}, body: payload, client: app.client });
+  } catch (error) {
+    console.error('Error processing event:', error);
+    res.status(500).send('Internal Server Error');
+  }
+});
 
 // Slash command handler
 app.command('/rate', async ({ ack, body, client }) => {
   await ack();
-  
+
   // Open rating modal
   await client.views.open({
     trigger_id: body.trigger_id,
@@ -65,7 +81,6 @@ app.command('/rate', async ({ ack, body, client }) => {
     }
   });
 });
-
 // Modal submission handler
 app.view('rating_modal', async ({ ack, view, body }) => {
   await ack();
@@ -92,5 +107,5 @@ app.view('rating_modal', async ({ ack, view, body }) => {
 
 // Start Express server
 expressApp.listen(process.env.PORT || 3000, () => {
-  console.log('Express server is running!');
+  console.log('⚡️ Bolt app is running on port', process.env.PORT || 3000);
 });
