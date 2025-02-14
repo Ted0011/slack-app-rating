@@ -30,7 +30,7 @@ expressApp.post('/slack/rate', async (req, res) => {
       throw new Error('Invalid payload: Missing required fields');
     }
 
-    // Acknowledge the request
+    // Acknowledge the request immediately
     res.status(200).send();
 
     // Handle the slash command
@@ -81,10 +81,11 @@ app.command('/rate', async ({ ack, body, client }) => {
     }
   });
 });
+
 // Modal submission handler
 app.view('rating_modal', async ({ ack, view, body }) => {
   await ack();
-  
+
   const rating = view.state.values.rating_block.rating_action.selected_option.value;
   const message = view.state.values.message_block.message_action.value;
   const reviewer = body.user.id;
@@ -109,3 +110,4 @@ app.view('rating_modal', async ({ ack, view, body }) => {
 expressApp.listen(process.env.PORT || 3000, () => {
   console.log('⚡️ Bolt app is running on port', process.env.PORT || 3000);
 });
+
