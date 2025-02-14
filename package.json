@@ -1,16 +1,17 @@
 {
-  "name": "slack-application-rating",
+  "name": "slack-rating-app",
   "version": "1.0.0",
-  "description": "This is a slack application which allows user to rate the other user and also get ratings....",
-  "main": "rating.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node rating.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "dependencies": {
-    "@slack/bolt": "^3.22.0",
-    "dotenv": "^16.4.7",
-    "express": "^4.21.2"
+    "@slack/bolt": "^3.13.1",
+    "dotenv": "^16.0.3",
+    "winston": "^3.8.2"
   },
-  "author": "SUMAN GHORASHINE",
-  "license": "APACHE-2"
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
 }

@@ -2,18 +2,14 @@
   "version": 2,
   "builds": [
     {
-      "src": "rating.js",
+      "src": "index.js",
       "use": "@vercel/node"
     }
   ],
   "routes": [
     {
-      "src": "/slack/rate",
-      "dest": "/rating.js"
-    },
-    {
       "src": "/(.*)",
-      "dest": "/rating.js"
+      "dest": "/"
     }
   ]
 }
