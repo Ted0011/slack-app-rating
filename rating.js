@@ -26,15 +26,18 @@ expressApp.post('/slack/rate', async (req, res) => {
     console.log('Incoming payload:', JSON.stringify(payload, null, 2));
 
     // Validate the payload
-    if (!payload.command || !payload.trigger_id) {
+    if (!payload.command || !payload.trigger_id || !payload.text) {
       throw new Error('Invalid payload: Missing required fields');
     }
+
+    // Extract user mention from the `text` field
+    const reviewee = payload.text.trim().replace(/^<@|>$/g, '');  // Remove <@ and > to extract the user ID
 
     // Acknowledge the request immediately
     res.status(200).send();
 
-    // Handle the slash command
-    await app.command('/rate', { ack: () => {}, body: payload, client: app.client });
+    // Send the reviewee ID to the slash command handler
+    await app.command('/rate', { ack: () => {}, body: { ...payload, reviewee }, client: app.client });
   } catch (error) {
     console.error('Error processing event:', error);
     res.status(500).send('Internal Server Error');
@@ -44,6 +47,9 @@ expressApp.post('/slack/rate', async (req, res) => {
 // Slash command handler
 app.command('/rate', async ({ ack, body, client }) => {
   await ack();
+
+  // Extract the reviewee ID from the body
+  const reviewee = body.reviewee;
 
   // Open rating modal
   await client.views.open({
@@ -77,7 +83,8 @@ app.command('/rate', async ({ ack, body, client }) => {
           label: { type: 'plain_text', text: 'Feedback Message' }
         }
       ],
-      submit: { type: 'plain_text', text: 'Submit' }
+      submit: { type: 'plain_text', text: 'Submit' },
+      private_metadata: reviewee  // Store reviewee user ID in the private_metadata
     }
   });
 });
@@ -89,7 +96,7 @@ app.view('rating_modal', async ({ ack, view, body }) => {
   const rating = view.state.values.rating_block.rating_action.selected_option.value;
   const message = view.state.values.message_block.message_action.value;
   const reviewer = body.user.id;
-  const reviewee = view.private_metadata; // Get from command parsing
+  const reviewee = view.private_metadata; // Get the reviewee from private metadata
 
   // Send DM to reviewer
   await app.client.chat.postMessage({
