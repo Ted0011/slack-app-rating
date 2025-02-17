@@ -1,4 +1,5 @@
-const { App } = require('@slack/bolt');
+const { createServer } = require('http');
+const { App, ExpressReceiver } = require('@slack/bolt');
 const winston = require('winston');
 require('dotenv').config();
 
@@ -12,6 +13,11 @@ const logger = winston.createLogger({
   transports: [
     new winston.transports.Console()
   ]
+});
+
+const receiver = new ExpressReceiver({
+  signingSecret: process.env.SLACK_SIGNING_SECRET,
+  processBeforeResponse: true,
 });
 
 // In-memory storage
@@ -72,8 +78,8 @@ const store = new RatingStore();
 
 // Initialize Slack app
 const app = new App({
-  signingSecret: process.env.SLACK_SIGNING_SECRET,
   token: process.env.SLACK_BOT_TOKEN,
+  receiver
 });
 
 // Handle /rate command
@@ -194,28 +200,27 @@ app.action('submit_rating', async ({ body, ack, say, client }) => {
   }
 });
 
-// Handler for Vercel serverless function
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
     // Handle Slack events and interactions
     const payload = req.body;
-    
+
     try {
-      // Handle different types of requests
+      // Handle Slack URL verification
       if (payload.type === 'url_verification') {
-        // Handle Slack URL verification
         return res.json({ challenge: payload.challenge });
       }
-      
-      // Process the request through the Bolt app
-      await app.processEvent(payload);
-      return res.status(200).end();
+
+      // Process the request through the receiver
+      await receiver.requestHandler(req, res);
     } catch (error) {
       logger.error('Error processing request:', error);
       return res.status(500).json({ error: 'Failed to process request' });
     }
-  } else {
+  } else if (req.method === 'GET') {
     // Health check endpoint
     res.status(200).json({ status: 'ok' });
+  } else {
+    res.status(405).json({ error: 'Method not allowed' });
   }
 };
