@@ -82,20 +82,49 @@ const app = new App({
   receiver
 });
 
+async function verifyChannelAccess(client, channelId) {
+  try {
+    // Try to get channel info to verify access
+    await client.conversations.info({
+      channel: channelId
+    });
+    return true;
+  } catch (error) {
+    if (error.data?.error === 'channel_not_found') {
+      return false;
+    }
+    throw error; // Rethrow other errors
+  }
+}
+
 // Handle /rate command
-app.command('/rate', async ({ command, ack, say, client }) => {
+app.command('/rate', async ({ command, ack, say, client, respond }) => {
   try {
     await ack();
-    
-    if (store.checkRateLimit(command.user_id)) {
-      throw new Error('Rate limit exceeded. Please try again later.');
+
+    // Verify channel access first
+    const hasAccess = await verifyChannelAccess(client, command.channel_id);
+    if (!hasAccess) {
+      await respond({
+        response_type: 'ephemeral',
+        text: "⚠️ I don't have access to this channel. Please add me to the channel and try again."
+      });
+      return;
     }
-    
+
+    if (store.checkRateLimit(command.user_id)) {
+      await respond({
+        response_type: 'ephemeral',
+        text: '⚠️ Rate limit exceeded. Please try again later.'
+      });
+      return;
+    }
+
     store.addRateLimitEntry(command.user_id);
     const rating = store.createRating(command.user_id, command.channel_id);
-    
-    logger.info(`New rating request created by ${command.user_id}`);
-    
+
+    logger.info(`New rating request created by ${command.user_id} in channel ${command.channel_id}`);
+
     await say({
       blocks: [
         {
@@ -132,8 +161,11 @@ app.command('/rate', async ({ command, ack, say, client }) => {
     });
   } catch (error) {
     logger.error('Error handling rate command:', error);
-    await say({
-      text: `Error: ${error.message}`
+
+    // Send user-friendly error message
+    await respond({
+      response_type: 'ephemeral',
+      text: "Sorry, something went wrong. Please try again or contact your workspace admin if the problem persists."
     });
   }
 });
@@ -142,24 +174,35 @@ app.command('/rate', async ({ command, ack, say, client }) => {
 app.action('submit_rating', async ({ body, ack, say, client }) => {
   try {
     await ack();
-    
+
     const ratingId = body.actions[0].block_id.split('_')[1];
     const reviewerId = body.user.id;
-    
+
     const rating = store.getRating(ratingId);
     if (!rating) {
       throw new Error('Rating request not found');
     }
-    
+
+    // Verify channel access again before posting
+    const hasAccess = await verifyChannelAccess(client, rating.channelId);
+    if (!hasAccess) {
+      await client.chat.postEphemeral({
+        channel: rating.channelId,
+        user: reviewerId,
+        text: "⚠️ I don't have access to post in this channel. Please add me to the channel and try again."
+      });
+      return;
+    }
+
     if (rating.requesterId === reviewerId) {
       throw new Error('You cannot rate yourself');
     }
-    
+
     const selectedRating = body.state.values[`rating_${ratingId}`].star_rating.selected_option.value;
     store.updateRating(ratingId, reviewerId, parseInt(selectedRating));
-    
+
     logger.info(`Rating completed: ${reviewerId} rated ${rating.requesterId} with ${selectedRating} stars`);
-    
+
     await client.chat.postMessage({
       channel: rating.channelId,
       text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ⭐`,
@@ -182,7 +225,7 @@ app.action('submit_rating', async ({ body, ack, say, client }) => {
         }
       ]
     });
-    
+
     try {
       await client.chat.delete({
         channel: rating.channelId,
@@ -191,34 +234,35 @@ app.action('submit_rating', async ({ body, ack, say, client }) => {
     } catch (error) {
       logger.error('Error deleting message:', error);
     }
-    
+
   } catch (error) {
     logger.error('Error submitting rating:', error);
-    await say({
+
+    // Send user-friendly error message
+    await client.chat.postEphemeral({
+      channel: body.channel.id,
+      user: body.user.id,
       text: `Error: ${error.message}`
     });
   }
 });
 
+// Vercel serverless handler
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
-    // Handle Slack events and interactions
-    const payload = req.body;
-
     try {
-      // Handle Slack URL verification
+      const payload = req.body;
+
       if (payload.type === 'url_verification') {
         return res.json({ challenge: payload.challenge });
       }
 
-      // Process the request through the receiver
       await receiver.requestHandler(req, res);
     } catch (error) {
       logger.error('Error processing request:', error);
       return res.status(500).json({ error: 'Failed to process request' });
     }
   } else if (req.method === 'GET') {
-    // Health check endpoint
     res.status(200).json({ status: 'ok' });
   } else {
     res.status(405).json({ error: 'Method not allowed' });
