@@ -155,50 +155,46 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     logger.error('Error handling rate command:', error);
     await respond({
       response_type: 'ephemeral',
-      text: "Sorry, something went wrong. Please try again or contact your workspace admin if the problem persists."
+      text: "Sorry, something went wrong. ${error.message}"
     });
   }
 });
 
 // Handle rating submission with immediate acknowledgment
-app.action('submit_rating', async ({ body, ack, respond, client }) => {
-  // Acknowledge immediately
-  await ack();
+//
 
+app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond, client }) => {
+  await ack();
+  
   try {
+    // If it's just the star rating selection, don't do anything else
+    if (action.action_id === 'star_rating') {
+      return;
+    }
+    
+    // Handle submit_rating action
     const ratingId = body.actions[0].block_id.split('_')[1];
     const reviewerId = body.user.id;
-
+    
     const rating = store.getRating(ratingId);
     if (!rating) {
-      await respond({
-        response_type: 'ephemeral',
-        text: 'Rating request not found'
-      });
-      return;
+      throw new Error('Rating request not found');
     }
-
+    
     if (rating.requesterId === reviewerId) {
-      await respond({
-        response_type: 'ephemeral',
-        text: 'You cannot rate yourself'
-      });
-      return;
+      throw new Error('You cannot rate yourself');
     }
-
-    const selectedRating = body.state.values[`rating_${ratingId}`].star_rating.selected_option?.value;
+    
+    // Get the selected rating value
+    const selectedRating = body.state.values[`rating_${ratingId}`]?.star_rating?.selected_option?.value;
     if (!selectedRating) {
-      await respond({
-        response_type: 'ephemeral',
-        text: 'Please select a rating before submitting'
-      });
-      return;
+      throw new Error('Please select a rating before submitting');
     }
-
+    
     store.updateRating(ratingId, reviewerId, parseInt(selectedRating));
-
+    
     logger.info(`Rating completed: ${reviewerId} rated ${rating.requesterId} with ${selectedRating} stars`);
-
+    
     // Post the final rating message
     await client.chat.postMessage({
       channel: rating.channelId,
@@ -222,8 +218,8 @@ app.action('submit_rating', async ({ body, ack, respond, client }) => {
         }
       ]
     });
-
-    // Clean up the original message
+    
+    // Delete the original message
     try {
       await client.chat.delete({
         channel: rating.channelId,
@@ -232,9 +228,9 @@ app.action('submit_rating', async ({ body, ack, respond, client }) => {
     } catch (error) {
       logger.error('Error deleting message:', error);
     }
-
+    
   } catch (error) {
-    logger.error('Error submitting rating:', error);
+    logger.error('Error processing action:', error);
     await respond({
       response_type: 'ephemeral',
       text: `Error: ${error.message}`
@@ -247,11 +243,15 @@ module.exports = async (req, res) => {
   if (req.method === 'POST') {
     try {
       const payload = req.body;
-
+      
+      // Log the incoming payload for debugging
+      logger.info('Incoming payload:', { payload });
+      
       if (payload.type === 'url_verification') {
         return res.json({ challenge: payload.challenge });
       }
-
+      
+      // Handle the request through the receiver
       await receiver.requestHandler(req, res);
     } catch (error) {
       logger.error('Error processing request:', error);
