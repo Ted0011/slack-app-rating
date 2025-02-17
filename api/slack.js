@@ -158,95 +158,24 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
 });
 // Handle rating submission with immediate acknowledgment
 //
-
-app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond, client }) => {
-  await ack();
-  
-  try {
-    // If it's just the star rating selection, don't do anything else
-    if (action.action_id === 'star_rating') {
-      return;
-    }
-    
-    // Handle submit_rating action
-    const ratingId = body.actions[0].block_id.split('_')[1];
-    const reviewerId = body.user.id;
-    
-    const rating = store.getRating(ratingId);
-    if (!rating) {
-      throw new Error('Rating request not found');
-    }
-    
-    if (rating.requesterId === reviewerId) {
-      throw new Error('You cannot rate yourself');
-    }
-    
-    // Get the selected rating value
-    const selectedRating = body.state.values[`rating_${ratingId}`]?.star_rating?.selected_option?.value;
-    if (!selectedRating) {
-      throw new Error('Please select a rating before submitting');
-    }
-    
-    store.updateRating(ratingId, reviewerId, parseInt(selectedRating));
-    
-    logger.info(`Rating completed: ${reviewerId} rated ${rating.requesterId} with ${selectedRating} stars`);
-    
-    // Post the final rating message
-    await client.chat.postMessage({
-      channel: rating.channelId,
-      text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ⭐`,
-      blocks: [
-        {
-          type: "context",
-          elements: [
-            {
-              type: "mrkdwn",
-              text: `Rating submitted on <!date^${Math.floor(Date.now()/1000)}^{date_short_pretty} at {time}|${new Date().toLocaleString()}>`
-            }
-          ]
-        },
-        {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ${'⭐'.repeat(parseInt(selectedRating))}`
-          }
-        }
-      ]
-    });
-    
-    // Delete the original message
-    try {
-      await client.chat.delete({
-        channel: rating.channelId,
-        ts: body.message.ts
-      });
-    } catch (error) {
-      logger.error('Error deleting message:', error);
-    }
-    
-  } catch (error) {
-    logger.error('Error processing action:', error);
-    await respond({
-      response_type: 'ephemeral',
-      text: `Error: ${error.message}`
-    });
-  }
-});
-
-// Vercel serverless handler
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
     try {
       const payload = req.body;
-      
+
       // Log the incoming payload for debugging
       logger.info('Incoming payload:', { payload });
-      
+
       if (payload.type === 'url_verification') {
         return res.json({ challenge: payload.challenge });
       }
-      
+
+      // Parse the nested payload if it exists
+      if (payload.payload) {
+        const parsedPayload = JSON.parse(payload.payload);
+        req.body = parsedPayload; // Replace the body with the parsed payload
+      }
+
       // Handle the request through the receiver
       await receiver.requestHandler(req, res);
     } catch (error) {
@@ -259,3 +188,77 @@ module.exports = async (req, res) => {
     res.status(405).json({ error: 'Method not allowed' });
   }
 };
+
+
+app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond, client }) => {
+  await ack(); // Acknowledge immediately
+
+  try {
+    // Handle the action
+    if (action.action_id === 'star_rating') {
+      return; // Do nothing for star rating selection
+    }
+
+    // Handle submit_rating action
+    const ratingId = body.actions[0].block_id.split('_')[1];
+    const reviewerId = body.user.id;
+
+    const rating = store.getRating(ratingId);
+    if (!rating) {
+      throw new Error('Rating request not found');
+    }
+
+    if (rating.requesterId === reviewerId) {
+      throw new Error('You cannot rate yourself');
+    }
+
+    const selectedRating = body.state.values[`rating_${ratingId}`]?.star_rating?.selected_option?.value;
+    if (!selectedRating) {
+      throw new Error('Please select a rating before submitting');
+    }
+
+    store.updateRating(ratingId, reviewerId, parseInt(selectedRating));
+
+    logger.info(`Rating completed: ${reviewerId} rated ${rating.requesterId} with ${selectedRating} stars`);
+
+    // Post the final rating message
+    await client.chat.postMessage({
+      channel: rating.channelId,
+      text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ⭐`,
+      blocks: [
+        {
+          type: "context",
+          elements: [
+            {
+              type: "mrkdwn",
+              text: `Rating submitted on <!date^${Math.floor(Date.now() / 1000)}^{date_short_pretty} at {time}|${new Date().toLocaleString()}>`
+            }
+          ]
+        },
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ${'⭐'.repeat(parseInt(selectedRating))}`
+          }
+        }
+      ]
+    });
+
+    // Delete the original message
+    try {
+      await client.chat.delete({
+        channel: rating.channelId,
+        ts: body.message.ts
+      });
+    } catch (error) {
+      logger.error('Error deleting message:', error);
+    }
+  } catch (error) {
+    logger.error('Error processing action:', error);
+    await respond({
+      response_type: 'ephemeral',
+      text: `Error: ${error.message}`
+    });
+  }
+});
