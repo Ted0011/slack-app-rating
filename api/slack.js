@@ -17,7 +17,7 @@ const logger = winston.createLogger({
 
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
-  processBeforeResponse: true,
+  processBeforeResponse: false,
 });
 
 // In-memory storage
@@ -82,7 +82,7 @@ const app = new App({
   receiver
 });
 
-async function verifyChannelAccess(client, channelId) {
+`async function verifyChannelAccess(client, channelId) {
   try {
     // Try to get channel info to verify access
     await client.conversations.info({
@@ -95,23 +95,13 @@ async function verifyChannelAccess(client, channelId) {
     }
     throw error; // Rethrow other errors
   }
-}
+}`
 
-// Handle /rate command
-app.command('/rate', async ({ command, ack, say, client, respond }) => {
+app.command('/rate', async ({ command, ack, respond, client }) => {
+  // Acknowledge immediately
+  await ack();
+
   try {
-    await ack();
-
-    // Verify channel access first
-    const hasAccess = await verifyChannelAccess(client, command.channel_id);
-    if (!hasAccess) {
-      await respond({
-        response_type: 'ephemeral',
-        text: "⚠️ I don't have access to this channel. Please add me to the channel and try again."
-      });
-      return;
-    }
-
     if (store.checkRateLimit(command.user_id)) {
       await respond({
         response_type: 'ephemeral',
@@ -125,7 +115,9 @@ app.command('/rate', async ({ command, ack, say, client, respond }) => {
 
     logger.info(`New rating request created by ${command.user_id} in channel ${command.channel_id}`);
 
-    await say({
+    // Use respond instead of say for better reliability
+    await respond({
+      response_type: 'in_channel',
       blocks: [
         {
           type: "section",
@@ -161,8 +153,6 @@ app.command('/rate', async ({ command, ack, say, client, respond }) => {
     });
   } catch (error) {
     logger.error('Error handling rate command:', error);
-
-    // Send user-friendly error message
     await respond({
       response_type: 'ephemeral',
       text: "Sorry, something went wrong. Please try again or contact your workspace admin if the problem persists."
@@ -170,39 +160,46 @@ app.command('/rate', async ({ command, ack, say, client, respond }) => {
   }
 });
 
-// Handle rating submission
-app.action('submit_rating', async ({ body, ack, say, client }) => {
-  try {
-    await ack();
+// Handle rating submission with immediate acknowledgment
+app.action('submit_rating', async ({ body, ack, respond, client }) => {
+  // Acknowledge immediately
+  await ack();
 
+  try {
     const ratingId = body.actions[0].block_id.split('_')[1];
     const reviewerId = body.user.id;
 
     const rating = store.getRating(ratingId);
     if (!rating) {
-      throw new Error('Rating request not found');
-    }
-
-    // Verify channel access again before posting
-    const hasAccess = await verifyChannelAccess(client, rating.channelId);
-    if (!hasAccess) {
-      await client.chat.postEphemeral({
-        channel: rating.channelId,
-        user: reviewerId,
-        text: "⚠️ I don't have access to post in this channel. Please add me to the channel and try again."
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Rating request not found'
       });
       return;
     }
 
     if (rating.requesterId === reviewerId) {
-      throw new Error('You cannot rate yourself');
+      await respond({
+        response_type: 'ephemeral',
+        text: 'You cannot rate yourself'
+      });
+      return;
     }
 
-    const selectedRating = body.state.values[`rating_${ratingId}`].star_rating.selected_option.value;
+    const selectedRating = body.state.values[`rating_${ratingId}`].star_rating.selected_option?.value;
+    if (!selectedRating) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Please select a rating before submitting'
+      });
+      return;
+    }
+
     store.updateRating(ratingId, reviewerId, parseInt(selectedRating));
 
     logger.info(`Rating completed: ${reviewerId} rated ${rating.requesterId} with ${selectedRating} stars`);
 
+    // Post the final rating message
     await client.chat.postMessage({
       channel: rating.channelId,
       text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ⭐`,
@@ -226,6 +223,7 @@ app.action('submit_rating', async ({ body, ack, say, client }) => {
       ]
     });
 
+    // Clean up the original message
     try {
       await client.chat.delete({
         channel: rating.channelId,
@@ -237,11 +235,8 @@ app.action('submit_rating', async ({ body, ack, say, client }) => {
 
   } catch (error) {
     logger.error('Error submitting rating:', error);
-
-    // Send user-friendly error message
-    await client.chat.postEphemeral({
-      channel: body.channel.id,
-      user: body.user.id,
+    await respond({
+      response_type: 'ephemeral',
       text: `Error: ${error.message}`
     });
   }
