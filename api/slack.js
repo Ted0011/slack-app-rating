@@ -96,12 +96,10 @@ const app = new App({
     throw error; // Rethrow other errors
   }
 }`
-
 app.command('/rate', async ({ command, ack, respond, client }) => {
-  // Acknowledge immediately
-  await ack();
-
   try {
+    await ack(); // Acknowledge immediately
+
     if (store.checkRateLimit(command.user_id)) {
       await respond({
         response_type: 'ephemeral',
@@ -115,7 +113,6 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
 
     logger.info(`New rating request created by ${command.user_id} in channel ${command.channel_id}`);
 
-    // Use respond instead of say for better reliability
     await respond({
       response_type: 'in_channel',
       blocks: [
@@ -155,11 +152,10 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     logger.error('Error handling rate command:', error);
     await respond({
       response_type: 'ephemeral',
-      text: "Sorry, something went wrong. ${error.message}"
+      text: `Sorry, something went wrong. ${error.message}`
     });
   }
 });
-
 // Handle rating submission with immediate acknowledgment
 //
 
