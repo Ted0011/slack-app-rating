@@ -96,9 +96,10 @@ const app = new App({
     throw error; // Rethrow other errors
   }
 }`
+
 app.command('/rate', async ({ command, ack, respond, client }) => {
   try {
-    await ack(); // Acknowledge immediately
+    await ack();
 
     if (store.checkRateLimit(command.user_id)) {
       await respond({
@@ -108,46 +109,31 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    store.addRateLimitEntry(command.user_id);
-    const rating = store.createRating(command.user_id, command.channel_id);
+    // For DMs, first open or get the conversation
+    let channelId = command.channel_id;
 
-    logger.info(`New rating request created by ${command.user_id} in channel ${command.channel_id}`);
-
-    await respond({
-      response_type: 'in_channel',
-      blocks: [
-        {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: `<@${command.user_id}> has requested a rating!`
-          }
-        },
-        {
-          type: "actions",
-          block_id: `rating_${rating.id}`,
-          elements: [
-            {
-              type: "radio_buttons",
-              action_id: "star_rating",
-              options: [
-                { text: { type: "plain_text", text: "⭐" }, value: "1" },
-                { text: { type: "plain_text", text: "⭐⭐" }, value: "2" },
-                { text: { type: "plain_text", text: "⭐⭐⭐" }, value: "3" },
-                { text: { type: "plain_text", text: "⭐⭐⭐⭐" }, value: "4" },
-                { text: { type: "plain_text", text: "⭐⭐⭐⭐⭐" }, value: "5" }
-              ]
-            },
-            {
-              type: "button",
-              text: { type: "plain_text", text: "Submit Rating" },
-              action_id: "submit_rating",
-              style: "primary"
-            }
-          ]
+    // If this is a DM or we get channel_not_found, ensure we have a valid DM channel
+    if (command.channel_name === 'directmessage') {
+      try {
+        const dmResponse = await client.conversations.open({
+          users: command.user_id
+        });
+        if (dmResponse.channel && dmResponse.channel.id) {
+          channelId = dmResponse.channel.id;
         }
-      ]
-    });
+      } catch (dmError) {
+        logger.error('Error opening DM:', dmError);
+        throw new Error('Unable to create rating in DM');
+      }
+    }
+
+    store.addRateLimitEntry(command.user_id);
+    const rating = store.createRating(command.user_id, channelId);
+
+    logger.info(`New rating request created by ${command.user_id} in channel ${channelId}`);
+
+    await postRatingMessage(client, channelId, command.user_id, rating);
+
   } catch (error) {
     logger.error('Error handling rate command:', error);
     await respond({
@@ -156,6 +142,8 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     });
   }
 });
+
+//
 // Handle rating submission with immediate acknowledgment
 //
 module.exports = async (req, res) => {
