@@ -189,6 +189,7 @@ module.exports = async (req, res) => {
   }
 };
 
+
 app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond, client }) => {
   await ack(); // Acknowledge immediately
 
@@ -220,7 +221,7 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
 
     logger.info(`Rating completed: ${reviewerId} rated ${rating.requesterId} with ${selectedRating} stars`);
 
-    // Post the final rating message in the channel
+    // Post the final rating message
     await client.chat.postMessage({
       channel: rating.channelId,
       text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ⭐`,
@@ -253,26 +254,6 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
     } catch (error) {
       logger.error('Error deleting message:', error);
     }
-
-    // Send a DM to the requester notifying them about the rating
-    try {
-      await client.chat.postMessage({
-        channel: rating.requesterId,  // This sends a DM to the requester
-        text: `Your rating request has been completed! <@${reviewerId}> rated you ${selectedRating} ⭐.`,
-        blocks: [
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: `You have received a rating from <@${reviewerId}>: ${selectedRating} ⭐`
-            }
-          }
-        ]
-      });
-    } catch (error) {
-      logger.error('Error sending DM to requester:', error);
-    }
-    
   } catch (error) {
     logger.error('Error processing action:', error);
     await respond({
