@@ -14,19 +14,18 @@ const logger = winston.createLogger({
   ]
 });
 
-// In-memory storage
+// In-memory storage class remains the same
 class RatingStore {
   constructor() {
     this.ratings = new Map();
     this.rateLimit = new Map();
   }
 
-  createRating(requesterId, targetId, channelId) {
+  createRating(requesterId, channelId) {
     const id = Date.now().toString();
     const rating = {
       id,
       requesterId,
-      targetId, // Store the target user's ID
       channelId,
       status: 'pending',
       createdAt: new Date()
@@ -82,18 +81,7 @@ const app = new App({
   receiver
 });
 
-async function extractTargetUser(command) {
-  const text = command.text.trim();
-  if (!text) {
-    return null;
-  }
-
-  // Extract user ID from mention format (<@USER_ID>)
-  const matches = text.match(/<@([A-Z0-9]+)>/);
-  return matches ? matches[1] : null;
-}
-
-async function postRatingMessage(client, channelId, requesterId, targetId, ratingId) {
+async function postRatingMessage(client, channelId, requesterId, rating) {
   return await client.chat.postMessage({
     channel: channelId,
     blocks: [
@@ -101,12 +89,12 @@ async function postRatingMessage(client, channelId, requesterId, targetId, ratin
         type: "section",
         text: {
           type: "mrkdwn",
-          text: `<@${requesterId}> has requested to rate <@${targetId}>!`
+          text: `<@${requesterId}> has requested a rating!`
         }
       },
       {
         type: "actions",
-        block_id: `rating_${ratingId}`,
+        block_id: `rating_${rating.id}`,
         elements: [
           {
             type: "radio_buttons",
@@ -143,49 +131,23 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    // Extract target user from command
-    const targetId = await extractTargetUser(command);
-    if (!targetId) {
-      await respond({
-        response_type: 'ephemeral',
-        text: 'Please specify a user to rate (e.g., /rate @username)'
-      });
-      return;
-    }
-
-    // Prevent self-rating
-    if (targetId === command.user_id) {
-      await respond({
-        response_type: 'ephemeral',
-        text: 'You cannot rate yourself!'
-      });
-      return;
-    }
-
     store.addRateLimitEntry(command.user_id);
-    const rating = store.createRating(command.user_id, targetId, command.channel_id);
+    const rating = store.createRating(command.user_id, command.channel_id);
 
-    logger.info(`New rating request created by ${command.user_id} for ${targetId} in channel ${command.channel_id}`);
+    logger.info(`New rating request created by ${command.user_id} in channel ${command.channel_id}`);
 
-    // Try to post in the current channel
     try {
-      await postRatingMessage(client, command.channel_id, command.user_id, targetId, rating.id);
+      await postRatingMessage(client, command.channel_id, command.user_id, rating);
     } catch (error) {
       if (error.data?.error === 'channel_not_found') {
-        // If channel_not_found, try to open a DM
-        try {
-          const dmResponse = await client.conversations.open({
-            users: `${command.user_id},${targetId}`
-          });
-          
-          if (dmResponse.channel && dmResponse.channel.id) {
-            // Update the rating's channel ID to the DM channel
-            rating.channelId = dmResponse.channel.id;
-            await postRatingMessage(client, dmResponse.channel.id, command.user_id, targetId, rating.id);
-          }
-        } catch (dmError) {
-          logger.error('Error opening DM:', dmError);
-          throw new Error('Unable to create rating in DM');
+        // If we're in a DM, create a new DM conversation
+        const dmResponse = await client.conversations.open({
+          users: command.user_id
+        });
+        
+        if (dmResponse.channel && dmResponse.channel.id) {
+          rating.channelId = dmResponse.channel.id; // Update the channel ID to the DM channel
+          await postRatingMessage(client, dmResponse.channel.id, command.user_id, rating);
         }
       } else {
         throw error;
@@ -200,7 +162,7 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
   }
 });
 
-// The action handler remains mostly the same, just updated to use targetId
+// The action handler remains mostly the same
 app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond, client }) => {
   await ack();
 
@@ -217,8 +179,8 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
       throw new Error('Rating request not found');
     }
 
-    if (rating.targetId !== rating.requesterId && reviewerId !== rating.targetId) {
-      throw new Error('Only the mentioned user can submit this rating');
+    if (rating.requesterId === reviewerId) {
+      throw new Error('You cannot rate yourself');
     }
 
     const selectedRating = body.state.values[`rating_${ratingId}`]?.star_rating?.selected_option?.value;
