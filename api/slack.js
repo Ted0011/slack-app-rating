@@ -140,6 +140,23 @@ async function postRatingMessage(client, channelId, requesterId, rating) {
   });
 }
 
+// Move verifyChannelAccess function to the top, near postRatingMessage
+async function verifyChannelAccess(client, channelId) {
+  try {
+    // Try to get channel info to verify access
+    await client.conversations.info({
+      channel: channelId
+    });
+    return true;
+  } catch (error) {
+    if (error.data?.error === 'channel_not_found') {
+      return false;
+    }
+    throw error; // Rethrow other errors
+  }
+}
+
+// Rest of your code...
 app.command('/rate', async ({ command, ack, respond, client }) => {
   try {
     await ack();
