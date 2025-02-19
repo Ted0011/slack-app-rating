@@ -169,23 +169,8 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    // For DMs, first open or get the conversation
+    // Use the existing channel ID from the command payload
     let channelId = command.channel_id;
-
-    // If this is a DM or we get channel_not_found, ensure we have a valid DM channel
-    if (command.channel_name === 'directmessage') {
-      try {
-        const dmResponse = await client.conversations.open({
-          users: command.user_id
-        });
-        if (dmResponse.channel && dmResponse.channel.id) {
-          channelId = dmResponse.channel.id;
-        }
-      } catch (dmError) {
-        logger.error('Error opening DM:', dmError);
-        throw new Error('Unable to create rating in DM');
-      }
-    }
 
     // Verify channel access
     const hasAccess = await verifyChannelAccess(client, channelId);
@@ -212,7 +197,6 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     });
   }
 });
-
 //
 // Handle rating submission with immediate acknowledgment
 //
