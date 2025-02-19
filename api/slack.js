@@ -97,6 +97,48 @@ const app = new App({
   }
 }`
 
+// Add this function near the top of your slack.js file, after initializing the app
+async function postRatingMessage(client, channelId, requesterId, rating) {
+  return await client.chat.postMessage({
+    channel: channelId,
+    text: `${requesterId} has requested a rating!`, // Fallback text for notifications
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `<@${requesterId}> has requested a rating!`
+        }
+      },
+      {
+        type: "actions",
+        block_id: `rating_${rating.id}`,
+        elements: [
+          {
+            type: "radio_buttons",
+            action_id: "star_rating",
+            options: [
+              { text: { type: "plain_text", text: "⭐" }, value: "1" },
+              { text: { type: "plain_text", text: "⭐⭐" }, value: "2" },
+              { text: { type: "plain_text", text: "⭐⭐⭐" }, value: "3" },
+              { text: { type: "plain_text", text: "⭐⭐⭐⭐" }, value: "4" },
+              { text: { type: "plain_text", text: "⭐⭐⭐⭐⭐" }, value: "5" }
+            ]
+          },
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Submit Rating" },
+            action_id: "submit_rating",
+            style: "primary"
+          }
+        ]
+      }
+    ],
+    unfurl_links: false,
+    unfurl_media: false
+  });
+}
+
 app.command('/rate', async ({ command, ack, respond, client }) => {
   try {
     await ack();
