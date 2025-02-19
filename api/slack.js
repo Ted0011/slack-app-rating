@@ -154,12 +154,11 @@ async function postRatingMessage(client, channelId, requesterId, rating) {
   }
 }
 
-// Optimized rate command handler
 app.command('/rate', async ({ command, ack, respond, client }) => {
   await ack();
 
   try {
-    // Rate limit check...
+    // Check rate limit first
     if (store.checkRateLimit(command.user_id)) {
       await respond({
         response_type: 'ephemeral',
@@ -168,56 +167,108 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    let channelId = command.channel_id;
+    // Get the mentioned user from the command text
+    const mentionedUser = command.text.trim().match(/@([A-Za-z0-9_]+)/);
+    if (!mentionedUser) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Please mention a user to rate (e.g., /rate @username)'
+      });
+      return;
+    }
+
+    const targetUserId = mentionedUser[1];
     
+    // Prevent self-rating
+    if (targetUserId === command.user_id) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'You cannot rate yourself!'
+      });
+      return;
+    }
+
+    // Use the original channel where the command was issued
+    let targetChannelId = command.channel_id;
+
+    // For DMs, we'll post in the same DM channel
     if (command.channel_name === 'directmessage') {
       try {
-        logger.info(`Opening DM with user ${command.user_id}`);
-        const dmResponse = await client.conversations.open({
-          users: command.user_id
+        // Get DM channel info
+        const dmInfo = await client.conversations.info({
+          channel: targetChannelId
         });
-        if (dmResponse.channel && dmResponse.channel.id) {
-          channelId = dmResponse.channel.id;
-          logger.info(`Successfully opened DM channel ${channelId}`);
-        } else {
-          throw new Error('Failed to get DM channel ID');
+        
+        if (!dmInfo.channel) {
+          throw new Error('Unable to verify DM channel');
         }
-      } catch (dmError) {
-        logger.error('Error opening DM:', dmError);
-        throw new Error(`Unable to create rating in DM: ${dmError.message}`);
-      }
-    } else {
-      // For non-DM channels, verify access first
-      const canAccess = await verifyChannelAccess(client, channelId);
-      if (!canAccess) {
-        throw new Error(`Bot needs to be invited to the channel first`);
+      } catch (error) {
+        logger.error('Error verifying DM channel:', error);
+        throw new Error('Unable to process rating in DM');
       }
     }
 
     store.addRateLimitEntry(command.user_id);
-    const rating = store.createRating(command.user_id, channelId);
+    const rating = store.createRating(command.user_id, targetChannelId);
 
-    await postRatingMessage(client, channelId, command.user_id, rating);
+    logger.info(`Attempting to post rating message in channel ${targetChannelId} for user ${targetUserId}`);
+    
+    try {
+      const messageResult = await client.chat.postMessage({
+        channel: targetChannelId,
+        text: `<@${command.user_id}> has requested to rate <@${targetUserId}>`,
+        blocks: [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `<@${command.user_id}> has requested to rate <@${targetUserId}>`
+            }
+          },
+          {
+            type: "actions",
+            block_id: `rating_${rating.id}`,
+            elements: [
+              {
+                type: "radio_buttons",
+                action_id: "star_rating",
+                options: [
+                  { text: { type: "plain_text", text: "⭐" }, value: "1" },
+                  { text: { type: "plain_text", text: "⭐⭐" }, value: "2" },
+                  { text: { type: "plain_text", text: "⭐⭐⭐" }, value: "3" },
+                  { text: { type: "plain_text", text: "⭐⭐⭐⭐" }, value: "4" },
+                  { text: { type: "plain_text", text: "⭐⭐⭐⭐⭐" }, value: "5" }
+                ]
+              },
+              {
+                type: "button",
+                text: { type: "plain_text", text: "Submit Rating" },
+                action_id: "submit_rating",
+                style: "primary"
+              }
+            ]
+          }
+        ],
+        unfurl_links: false,
+        unfurl_media: false
+      });
+
+      logger.info(`Successfully posted rating message with ts: ${messageResult.ts}`);
+    } catch (postError) {
+      logger.error(`Error posting rating message:`, postError);
+      throw postError;
+    }
 
   } catch (error) {
     logger.error('Error handling rate command:', error);
-    let errorMessage = 'Sorry, something went wrong. ';
-    
-    if (error.message.includes('needs to be invited')) {
-      errorMessage += 'Please invite the bot to this channel first using /invite @rating-bot';
-    } else if (error.message.includes('DM')) {
-      errorMessage += 'Unable to send direct message. Please try again or contact support.';
-    } else {
-      errorMessage += error.message;
-    }
-
     await respond({
       response_type: 'ephemeral',
-      text: errorMessage
+      text: `Sorry, something went wrong. ${error.message}`
     });
   }
 });
 
+// Update the action handler to also handle DMs properly
 app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond, client }) => {
   await ack();
 
@@ -245,9 +296,7 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
 
     store.updateRating(ratingId, reviewerId, parseInt(selectedRating));
 
-    logger.info(`Rating completed: ${reviewerId} rated ${rating.requesterId} with ${selectedRating} stars`);
-
-    // Post the final rating message
+    // Post completion message in the original channel
     await client.chat.postMessage({
       channel: rating.channelId,
       text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ⭐`,
