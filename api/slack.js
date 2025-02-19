@@ -17,7 +17,7 @@ const logger = winston.createLogger({
 
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
-  processBeforeResponse: true, // Changed to true for faster processing
+  processBeforeResponse: true,
 });
 
 // In-memory storage
@@ -76,14 +76,16 @@ class RatingStore {
 
 const store = new RatingStore();
 
+// Initialize Slack app
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   receiver,
   processBeforeResponse: true
 });
 
-async function verifyChannelAccess(client, channelId) {
+`async function verifyChannelAccess(client, channelId) {
   try {
+    // Try to get channel info to verify access
     await client.conversations.info({
       channel: channelId
     });
@@ -92,25 +94,16 @@ async function verifyChannelAccess(client, channelId) {
     if (error.data?.error === 'channel_not_found') {
       return false;
     }
-    throw error;
+    throw error; // Rethrow other errors
   }
-}
+}`
 
+// Add this function near the top of your slack.js file, after initializing the app
 async function postRatingMessage(client, channelId, requesterId, rating) {
-  try {
-    // First verify channel access
-    const canAccess = await verifyChannelAccess(client, channelId);
-    if (!canAccess) {
-      logger.error(`Bot lacks access to channel ${channelId}`);
-      throw new Error('Bot lacks channel access');
-    }
-
-    logger.info(`Attempting to post message in channel ${channelId}`);
-    
-    const result = await client.chat.postMessage({
-      channel: channelId,
-      text: `${requesterId} has requested a rating!`,
-      blocks: [
+  return await client.chat.postMessage({
+    channel: channelId,
+    text: `${requesterId} has requested a rating!`, // Fallback text for notifications
+    blocks: [
       {
         type: "section",
         text: {
@@ -144,135 +137,13 @@ async function postRatingMessage(client, channelId, requesterId, rating) {
     ],
     unfurl_links: false,
     unfurl_media: false
-    });
-
-    logger.info(`Successfully posted message in channel ${channelId}`);
-    return result;
-  } catch (error) {
-    logger.error(`Failed to post message in channel ${channelId}:`, error);
-    throw error;
-  }
+  });
 }
 
-// app.command('/rate', async ({ command, ack, respond, client }) => {
-//   await ack();
-
-//   try {
-//     // Check rate limit first
-//     if (store.checkRateLimit(command.user_id)) {
-//       await respond({
-//         response_type: 'ephemeral',
-//         text: '⚠️ Rate limit exceeded. Please try again later.'
-//       });
-//       return;
-//     }
-
-//     // Get the mentioned user from the command text
-//     const mentionedUser = command.text.trim().match(/@([A-Za-z0-9_]+)/);
-//     if (!mentionedUser) {
-//       await respond({
-//         response_type: 'ephemeral',
-//         text: 'Please mention a user to rate (e.g., /rate @username)'
-//       });
-//       return;
-//     }
-
-//     const targetUserId = mentionedUser[1];
-    
-//     // Prevent self-rating
-//     if (targetUserId === command.user_id) {
-//       await respond({
-//         response_type: 'ephemeral',
-//         text: 'You cannot rate yourself!'
-//       });
-//       return;
-//     }
-
-//     // Use the original channel where the command was issued
-//     let targetChannelId = command.channel_id;
-
-//     // For DMs, we'll post in the same DM channel
-//     if (command.channel_name === 'directmessage') {
-//       try {
-//         // Get DM channel info
-//         const dmInfo = await client.conversations.info({
-//           channel: targetChannelId
-//         });
-        
-//         if (!dmInfo.channel) {
-//           throw new Error('Unable to verify DM channel');
-//         }
-//       } catch (error) {
-//         logger.error('Error verifying DM channel:', error);
-//         throw new Error('Unable to process rating in DM');
-//       }
-//     }
-
-//     store.addRateLimitEntry(command.user_id);
-//     const rating = store.createRating(command.user_id, targetChannelId);
-
-//     logger.info(`Attempting to post rating message in channel ${targetChannelId} for user ${targetUserId}`);
-    
-//     try {
-//       const messageResult = await client.chat.postMessage({
-//         channel: targetChannelId,
-//         text: `<@${command.user_id}> has requested to rate <@${targetUserId}>`,
-//         blocks: [
-//           {
-//             type: "section",
-//             text: {
-//               type: "mrkdwn",
-//               text: `<@${command.user_id}> has requested to rate <@${targetUserId}>`
-//             }
-//           },
-//           {
-//             type: "actions",
-//             block_id: `rating_${rating.id}`,
-//             elements: [
-//               {
-//                 type: "radio_buttons",
-//                 action_id: "star_rating",
-//                 options: [
-//                   { text: { type: "plain_text", text: "⭐" }, value: "1" },
-//                   { text: { type: "plain_text", text: "⭐⭐" }, value: "2" },
-//                   { text: { type: "plain_text", text: "⭐⭐⭐" }, value: "3" },
-//                   { text: { type: "plain_text", text: "⭐⭐⭐⭐" }, value: "4" },
-//                   { text: { type: "plain_text", text: "⭐⭐⭐⭐⭐" }, value: "5" }
-//                 ]
-//               },
-//               {
-//                 type: "button",
-//                 text: { type: "plain_text", text: "Submit Rating" },
-//                 action_id: "submit_rating",
-//                 style: "primary"
-//               }
-//             ]
-//           }
-//         ],
-//         unfurl_links: false,
-//         unfurl_media: false
-//       });
-
-//       logger.info(`Successfully posted rating message with ts: ${messageResult.ts}`);
-//     } catch (postError) {
-//       logger.error(`Error posting rating message:`, postError);
-//       throw postError;
-//     }
-
-//   } catch (error) {
-//     logger.error('Error handling rate command:', error);
-//     await respond({
-//       response_type: 'ephemeral',
-//       text: `Sorry, something went wrong. ${error.message}`
-//     });
-//   }
-// });
-
 app.command('/rate', async ({ command, ack, respond, client }) => {
-  await ack();
-
   try {
-    // Check rate limit first
+    await ack();
+
     if (store.checkRateLimit(command.user_id)) {
       await respond({
         response_type: 'ephemeral',
@@ -281,126 +152,85 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    // Get the mentioned user from the command text
-    const mentionedUser = command.text.trim().match(/@([A-Za-z0-9]+)/);
-    if (!mentionedUser) {
-      await respond({
-        response_type: 'ephemeral',
-        text: 'Please mention a user to rate (e.g., /rate @username)'
-      });
-      return;
-    }
+    // For DMs, first open or get the conversation
+    let channelId = command.channel_id;
 
-    const targetUserId = mentionedUser[1];
-    
-    // Prevent self-rating
-    if (targetUserId === command.user_id) {
-      await respond({
-        response_type: 'ephemeral',
-        text: 'You cannot rate yourself!'
-      });
-      return;
-    }
-
-    let targetChannelId = command.channel_id;
-
-    // Special handling for DMs
+    // If this is a DM or we get channel_not_found, ensure we have a valid DM channel
     if (command.channel_name === 'directmessage') {
       try {
-        // Open a DM channel
-        const result = await client.conversations.open({
+        const dmResponse = await client.conversations.open({
           users: command.user_id
         });
-        
-        if (!result.ok || !result.channel || !result.channel.id) {
-          throw new Error('Failed to open DM channel');
+        if (dmResponse.channel && dmResponse.channel.id) {
+          channelId = dmResponse.channel.id;
         }
-        
-        targetChannelId = result.channel.id;
-        logger.info(`Opened DM channel: ${targetChannelId}`);
       } catch (dmError) {
-        logger.error('Error opening DM channel:', dmError);
-        await respond({
-          response_type: 'ephemeral',
-          text: 'Unable to send rating request in DM. Please try in a channel instead.'
-        });
-        return;
+        logger.error('Error opening DM:', dmError);
+        throw new Error('Unable to create rating in DM');
       }
     }
 
     store.addRateLimitEntry(command.user_id);
-    const rating = store.createRating(command.user_id, targetChannelId);
+    const rating = store.createRating(command.user_id, channelId);
 
-    logger.info(`Attempting to post rating message in channel ${targetChannelId} for user ${targetUserId}`);
-    
-    try {
-      const messageResult = await client.chat.postMessage({
-        channel: targetChannelId,
-        text: `<@${command.user_id}> has requested to rate <@${targetUserId}>`,
-        blocks: [
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: `<@${command.user_id}> has requested to rate <@${targetUserId}>`
-            }
-          },
-          {
-            type: "actions",
-            block_id: `rating_${rating.id}`,
-            elements: [
-              {
-                type: "radio_buttons",
-                action_id: "star_rating",
-                options: [
-                  { text: { type: "plain_text", text: "⭐" }, value: "1" },
-                  { text: { type: "plain_text", text: "⭐⭐" }, value: "2" },
-                  { text: { type: "plain_text", text: "⭐⭐⭐" }, value: "3" },
-                  { text: { type: "plain_text", text: "⭐⭐⭐⭐" }, value: "4" },
-                  { text: { type: "plain_text", text: "⭐⭐⭐⭐⭐" }, value: "5" }
-                ]
-              },
-              {
-                type: "button",
-                text: { type: "plain_text", text: "Submit Rating" },
-                action_id: "submit_rating",
-                style: "primary"
-              }
-            ]
-          }
-        ],
-        unfurl_links: false,
-        unfurl_media: false
-      });
+    logger.info(`New rating request created by ${command.user_id} in channel ${channelId}`);
 
-      logger.info(`Successfully posted rating message with ts: ${messageResult.ts}`);
-    } catch (postError) {
-      logger.error(`Error posting rating message:`, postError);
-      await respond({
-        response_type: 'ephemeral',
-        text: 'Unable to post rating message. Please ensure the bot is invited to the channel.'
-      });
-      return;
-    }
+    await postRatingMessage(client, channelId, command.user_id, rating);
 
   } catch (error) {
     logger.error('Error handling rate command:', error);
     await respond({
       response_type: 'ephemeral',
-      text: `Sorry, something went wrong. Please try again or use the command in a channel.`
+      text: `Sorry, something went wrong. ${error.message}`
     });
   }
 });
 
-// Update the action handler to also handle DMs properly
+//
+// Handle rating submission with immediate acknowledgment
+//
+module.exports = async (req, res) => {
+  if (req.method === 'POST') {
+    try {
+      const payload = req.body;
+
+      // Log the incoming payload for debugging
+      logger.info('Incoming payload:', { payload });
+
+      if (payload.type === 'url_verification') {
+        return res.json({ challenge: payload.challenge });
+      }
+
+      // Parse the nested payload if it exists
+      if (payload.payload) {
+        const parsedPayload = JSON.parse(payload.payload);
+        req.body = parsedPayload; // Replace the body with the parsed payload
+      }
+
+      // Handle the request through the receiver
+      await receiver.requestHandler(req, res);
+    } catch (error) {
+      logger.error('Error processing request:', error);
+      return res.status(500).json({ error: 'Failed to process request' });
+    }
+  } else if (req.method === 'GET') {
+    res.status(200).json({ status: 'ok' });
+  } else {
+    res.status(405).json({ error: 'Method not allowed' });
+  }
+};
+
+
 app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond, client }) => {
-  await ack();
+  await ack(); // Acknowledge immediately
 
   try {
+    // Handle the action
     if (action.action_id === 'star_rating') {
-      return;
+      return; // Do nothing for star rating selection
     }
 
+    // Handle submit_rating action
     const ratingId = body.actions[0].block_id.split('_')[1];
     const reviewerId = body.user.id;
 
@@ -420,7 +250,9 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
 
     store.updateRating(ratingId, reviewerId, parseInt(selectedRating));
 
-    // Post completion message in the original channel
+    logger.info(`Rating completed: ${reviewerId} rated ${rating.requesterId} with ${selectedRating} stars`);
+
+    // Post the final rating message
     await client.chat.postMessage({
       channel: rating.channelId,
       text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ⭐`,
@@ -461,50 +293,3 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
     });
   }
 });
-
-// Optimized request handler
-module.exports = async (req, res) => {
-  if (req.method === 'POST') {
-    try {
-      // Handle URL verification immediately
-      if (req.body && req.body.type === 'url_verification') {
-        return res.json({ challenge: req.body.challenge });
-      }
-
-      // Parse payload if needed
-      if (req.body && req.body.payload) {
-        try {
-          const parsedPayload = JSON.parse(req.body.payload);
-          req.body = parsedPayload;
-        } catch (parseError) {
-          logger.error('Error parsing payload:', parseError);
-        }
-      }
-
-      // Set a shorter timeout for the response
-      res.setTimeout(3000, () => {
-        if (!res.headersSent) {
-          res.status(200).end();
-        }
-      });
-
-      // Process the request through the receiver
-      await Promise.race([
-        receiver.requestHandler(req, res),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Request timeout')), 2500)
-        )
-      ]);
-
-    } catch (error) {
-      logger.error('Error processing request:', error);
-      if (!res.headersSent) {
-        res.status(200).end(); // Still return 200 to Slack
-      }
-    }
-  } else if (req.method === 'GET') {
-    res.status(200).json({ status: 'ok' });
-  } else {
-    res.status(405).json({ error: 'Method not allowed' });
-  }
-};
