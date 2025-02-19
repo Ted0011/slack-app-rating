@@ -170,6 +170,16 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       }
     }
 
+    // Verify channel access
+    const hasAccess = await verifyChannelAccess(client, channelId);
+    if (!hasAccess) {
+      await respond({
+        response_type: 'ephemeral',
+        text: '⚠️ The bot does not have access to this channel. Please add the bot to the channel and try again.'
+      });
+      return;
+    }
+
     store.addRateLimitEntry(command.user_id);
     const rating = store.createRating(command.user_id, channelId);
 
