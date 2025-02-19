@@ -282,7 +282,7 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     }
 
     // Get the mentioned user from the command text
-    const mentionedUser = command.text.trim().match(/<@([A-Za-z0-9]+)>/);
+    const mentionedUser = command.text.trim().match(/@([A-Za-z0-9]+)/);
     if (!mentionedUser) {
       await respond({
         response_type: 'ephemeral',
