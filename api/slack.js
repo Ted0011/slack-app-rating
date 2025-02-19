@@ -17,7 +17,7 @@ const logger = winston.createLogger({
 
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
-  processBeforeResponse: false,
+  processBeforeResponse: true, // Changed to true for faster processing
 });
 
 // In-memory storage
@@ -76,15 +76,14 @@ class RatingStore {
 
 const store = new RatingStore();
 
-// Initialize Slack app
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
-  receiver
+  receiver,
+  processBeforeResponse: true
 });
 
-`async function verifyChannelAccess(client, channelId) {
+async function verifyChannelAccess(client, channelId) {
   try {
-    // Try to get channel info to verify access
     await client.conversations.info({
       channel: channelId
     });
@@ -93,15 +92,14 @@ const app = new App({
     if (error.data?.error === 'channel_not_found') {
       return false;
     }
-    throw error; // Rethrow other errors
+    throw error;
   }
-}`
+}
 
-// Add this function near the top of your slack.js file, after initializing the app
 async function postRatingMessage(client, channelId, requesterId, rating) {
   return await client.chat.postMessage({
     channel: channelId,
-    text: `${requesterId} has requested a rating!`, // Fallback text for notifications
+    text: `${requesterId} has requested a rating!`,
     blocks: [
       {
         type: "section",
@@ -139,10 +137,13 @@ async function postRatingMessage(client, channelId, requesterId, rating) {
   });
 }
 
+// Optimized rate command handler
 app.command('/rate', async ({ command, ack, respond, client }) => {
-  try {
-    await ack();
+  // Acknowledge immediately
+  await ack();
 
+  try {
+    // Check rate limit first
     if (store.checkRateLimit(command.user_id)) {
       await respond({
         response_type: 'ephemeral',
@@ -151,85 +152,51 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    // For DMs, first open or get the conversation
-    let channelId = command.channel_id;
-
-    // If this is a DM or we get channel_not_found, ensure we have a valid DM channel
-    if (command.channel_name === 'directmessage') {
-      try {
-        const dmResponse = await client.conversations.open({
-          users: command.user_id
-        });
-        if (dmResponse.channel && dmResponse.channel.id) {
-          channelId = dmResponse.channel.id;
+    // Start channel resolution in parallel with rate limit entry
+    const [channelId] = await Promise.all([
+      (async () => {
+        if (command.channel_name === 'directmessage') {
+          const dmResponse = await client.conversations.open({
+            users: command.user_id
+          });
+          return dmResponse.channel?.id || command.channel_id;
         }
-      } catch (dmError) {
-        logger.error('Error opening DM:', dmError);
-        throw new Error('Unable to create rating in DM');
-      }
+        return command.channel_id;
+      })(),
+      Promise.resolve(store.addRateLimitEntry(command.user_id))
+    ]);
+
+    const rating = store.createRating(command.user_id, channelId);
+    
+    // Post message with error handling
+    try {
+      await postRatingMessage(client, channelId, command.user_id, rating);
+    } catch (postError) {
+      logger.error('Error posting rating message:', postError);
+      throw new Error('Failed to post rating message');
     }
 
-    store.addRateLimitEntry(command.user_id);
-    const rating = store.createRating(command.user_id, channelId);
-
     logger.info(`New rating request created by ${command.user_id} in channel ${channelId}`);
-
-    await postRatingMessage(client, channelId, command.user_id, rating);
 
   } catch (error) {
     logger.error('Error handling rate command:', error);
     await respond({
       response_type: 'ephemeral',
       text: `Sorry, something went wrong. ${error.message}`
-    });
+    }).catch(respondError => 
+      logger.error('Error sending error response:', respondError)
+    );
   }
 });
 
-//
-// Handle rating submission with immediate acknowledgment
-//
-module.exports = async (req, res) => {
-  if (req.method === 'POST') {
-    try {
-      const payload = req.body;
-
-      // Log the incoming payload for debugging
-      logger.info('Incoming payload:', { payload });
-
-      if (payload.type === 'url_verification') {
-        return res.json({ challenge: payload.challenge });
-      }
-
-      // Parse the nested payload if it exists
-      if (payload.payload) {
-        const parsedPayload = JSON.parse(payload.payload);
-        req.body = parsedPayload; // Replace the body with the parsed payload
-      }
-
-      // Handle the request through the receiver
-      await receiver.requestHandler(req, res);
-    } catch (error) {
-      logger.error('Error processing request:', error);
-      return res.status(500).json({ error: 'Failed to process request' });
-    }
-  } else if (req.method === 'GET') {
-    res.status(200).json({ status: 'ok' });
-  } else {
-    res.status(405).json({ error: 'Method not allowed' });
-  }
-};
-
-
 app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond, client }) => {
-  await ack(); // Acknowledge immediately
+  await ack();
 
   try {
-    // Handle the action
     if (action.action_id === 'star_rating') {
-      return; // Do nothing for star rating selection
+      return;
     }
 
-    // Handle submit_rating action
     const ratingId = body.actions[0].block_id.split('_')[1];
     const reviewerId = body.user.id;
 
@@ -292,3 +259,50 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
     });
   }
 });
+
+// Optimized request handler
+module.exports = async (req, res) => {
+  if (req.method === 'POST') {
+    try {
+      // Handle URL verification immediately
+      if (req.body && req.body.type === 'url_verification') {
+        return res.json({ challenge: req.body.challenge });
+      }
+
+      // Parse payload if needed
+      if (req.body && req.body.payload) {
+        try {
+          const parsedPayload = JSON.parse(req.body.payload);
+          req.body = parsedPayload;
+        } catch (parseError) {
+          logger.error('Error parsing payload:', parseError);
+        }
+      }
+
+      // Set a shorter timeout for the response
+      res.setTimeout(3000, () => {
+        if (!res.headersSent) {
+          res.status(200).end();
+        }
+      });
+
+      // Process the request through the receiver
+      await Promise.race([
+        receiver.requestHandler(req, res),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Request timeout')), 2500)
+        )
+      ]);
+
+    } catch (error) {
+      logger.error('Error processing request:', error);
+      if (!res.headersSent) {
+        res.status(200).end(); // Still return 200 to Slack
+      }
+    }
+  } else if (req.method === 'GET') {
+    res.status(200).json({ status: 'ok' });
+  } else {
+    res.status(405).json({ error: 'Method not allowed' });
+  }
+};
