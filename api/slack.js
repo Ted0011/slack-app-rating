@@ -157,6 +157,7 @@ async function verifyChannelAccess(client, channelId) {
 }
 
 // Rest of your code...
+
 app.command('/rate', async ({ command, ack, respond, client }) => {
   try {
     await ack();
@@ -172,14 +173,17 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     // Use the existing channel ID from the command payload
     let channelId = command.channel_id;
 
-    // Verify channel access
-    const hasAccess = await verifyChannelAccess(client, channelId);
-    if (!hasAccess) {
-      await respond({
-        response_type: 'ephemeral',
-        text: '⚠️ The bot does not have access to this channel. Please add the bot to the channel and try again.'
-      });
-      return;
+    // Skip access verification for DMs
+    if (command.channel_name !== 'directmessage') {
+      // Verify channel access for non-DM channels
+      const hasAccess = await verifyChannelAccess(client, channelId);
+      if (!hasAccess) {
+        await respond({
+          response_type: 'ephemeral',
+          text: '⚠️ The bot does not have access to this channel. Please add the bot to the channel and try again.'
+        });
+        return;
+      }
     }
 
     store.addRateLimitEntry(command.user_id);
@@ -197,6 +201,7 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     });
   }
 });
+
 //
 // Handle rating submission with immediate acknowledgment
 //
