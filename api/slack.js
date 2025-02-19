@@ -154,6 +154,120 @@ async function postRatingMessage(client, channelId, requesterId, rating) {
   }
 }
 
+// app.command('/rate', async ({ command, ack, respond, client }) => {
+//   await ack();
+
+//   try {
+//     // Check rate limit first
+//     if (store.checkRateLimit(command.user_id)) {
+//       await respond({
+//         response_type: 'ephemeral',
+//         text: '⚠️ Rate limit exceeded. Please try again later.'
+//       });
+//       return;
+//     }
+
+//     // Get the mentioned user from the command text
+//     const mentionedUser = command.text.trim().match(/@([A-Za-z0-9_]+)/);
+//     if (!mentionedUser) {
+//       await respond({
+//         response_type: 'ephemeral',
+//         text: 'Please mention a user to rate (e.g., /rate @username)'
+//       });
+//       return;
+//     }
+
+//     const targetUserId = mentionedUser[1];
+    
+//     // Prevent self-rating
+//     if (targetUserId === command.user_id) {
+//       await respond({
+//         response_type: 'ephemeral',
+//         text: 'You cannot rate yourself!'
+//       });
+//       return;
+//     }
+
+//     // Use the original channel where the command was issued
+//     let targetChannelId = command.channel_id;
+
+//     // For DMs, we'll post in the same DM channel
+//     if (command.channel_name === 'directmessage') {
+//       try {
+//         // Get DM channel info
+//         const dmInfo = await client.conversations.info({
+//           channel: targetChannelId
+//         });
+        
+//         if (!dmInfo.channel) {
+//           throw new Error('Unable to verify DM channel');
+//         }
+//       } catch (error) {
+//         logger.error('Error verifying DM channel:', error);
+//         throw new Error('Unable to process rating in DM');
+//       }
+//     }
+
+//     store.addRateLimitEntry(command.user_id);
+//     const rating = store.createRating(command.user_id, targetChannelId);
+
+//     logger.info(`Attempting to post rating message in channel ${targetChannelId} for user ${targetUserId}`);
+    
+//     try {
+//       const messageResult = await client.chat.postMessage({
+//         channel: targetChannelId,
+//         text: `<@${command.user_id}> has requested to rate <@${targetUserId}>`,
+//         blocks: [
+//           {
+//             type: "section",
+//             text: {
+//               type: "mrkdwn",
+//               text: `<@${command.user_id}> has requested to rate <@${targetUserId}>`
+//             }
+//           },
+//           {
+//             type: "actions",
+//             block_id: `rating_${rating.id}`,
+//             elements: [
+//               {
+//                 type: "radio_buttons",
+//                 action_id: "star_rating",
+//                 options: [
+//                   { text: { type: "plain_text", text: "⭐" }, value: "1" },
+//                   { text: { type: "plain_text", text: "⭐⭐" }, value: "2" },
+//                   { text: { type: "plain_text", text: "⭐⭐⭐" }, value: "3" },
+//                   { text: { type: "plain_text", text: "⭐⭐⭐⭐" }, value: "4" },
+//                   { text: { type: "plain_text", text: "⭐⭐⭐⭐⭐" }, value: "5" }
+//                 ]
+//               },
+//               {
+//                 type: "button",
+//                 text: { type: "plain_text", text: "Submit Rating" },
+//                 action_id: "submit_rating",
+//                 style: "primary"
+//               }
+//             ]
+//           }
+//         ],
+//         unfurl_links: false,
+//         unfurl_media: false
+//       });
+
+//       logger.info(`Successfully posted rating message with ts: ${messageResult.ts}`);
+//     } catch (postError) {
+//       logger.error(`Error posting rating message:`, postError);
+//       throw postError;
+//     }
+
+//   } catch (error) {
+//     logger.error('Error handling rate command:', error);
+//     await respond({
+//       response_type: 'ephemeral',
+//       text: `Sorry, something went wrong. ${error.message}`
+//     });
+//   }
+// });
+
 app.command('/rate', async ({ command, ack, respond, client }) => {
   await ack();
 
@@ -168,7 +282,7 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     }
 
     // Get the mentioned user from the command text
-    const mentionedUser = command.text.trim().match(/@([A-Za-z0-9_]+)/);
+    const mentionedUser = command.text.trim().match(/<@([A-Za-z0-9]+)>/);
     if (!mentionedUser) {
       await respond({
         response_type: 'ephemeral',
@@ -188,23 +302,29 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    // Use the original channel where the command was issued
     let targetChannelId = command.channel_id;
 
-    // For DMs, we'll post in the same DM channel
+    // Special handling for DMs
     if (command.channel_name === 'directmessage') {
       try {
-        // Get DM channel info
-        const dmInfo = await client.conversations.info({
-          channel: targetChannelId
+        // Open a DM channel
+        const result = await client.conversations.open({
+          users: command.user_id
         });
         
-        if (!dmInfo.channel) {
-          throw new Error('Unable to verify DM channel');
+        if (!result.ok || !result.channel || !result.channel.id) {
+          throw new Error('Failed to open DM channel');
         }
-      } catch (error) {
-        logger.error('Error verifying DM channel:', error);
-        throw new Error('Unable to process rating in DM');
+        
+        targetChannelId = result.channel.id;
+        logger.info(`Opened DM channel: ${targetChannelId}`);
+      } catch (dmError) {
+        logger.error('Error opening DM channel:', dmError);
+        await respond({
+          response_type: 'ephemeral',
+          text: 'Unable to send rating request in DM. Please try in a channel instead.'
+        });
+        return;
       }
     }
 
@@ -256,14 +376,18 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       logger.info(`Successfully posted rating message with ts: ${messageResult.ts}`);
     } catch (postError) {
       logger.error(`Error posting rating message:`, postError);
-      throw postError;
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Unable to post rating message. Please ensure the bot is invited to the channel.'
+      });
+      return;
     }
 
   } catch (error) {
     logger.error('Error handling rate command:', error);
     await respond({
       response_type: 'ephemeral',
-      text: `Sorry, something went wrong. ${error.message}`
+      text: `Sorry, something went wrong. Please try again or use the command in a channel.`
     });
   }
 });
