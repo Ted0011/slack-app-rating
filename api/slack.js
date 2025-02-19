@@ -97,10 +97,20 @@ async function verifyChannelAccess(client, channelId) {
 }
 
 async function postRatingMessage(client, channelId, requesterId, rating) {
-  return await client.chat.postMessage({
-    channel: channelId,
-    text: `${requesterId} has requested a rating!`,
-    blocks: [
+  try {
+    // First verify channel access
+    const canAccess = await verifyChannelAccess(client, channelId);
+    if (!canAccess) {
+      logger.error(`Bot lacks access to channel ${channelId}`);
+      throw new Error('Bot lacks channel access');
+    }
+
+    logger.info(`Attempting to post message in channel ${channelId}`);
+    
+    const result = await client.chat.postMessage({
+      channel: channelId,
+      text: `${requesterId} has requested a rating!`,
+      blocks: [
       {
         type: "section",
         text: {
@@ -134,16 +144,22 @@ async function postRatingMessage(client, channelId, requesterId, rating) {
     ],
     unfurl_links: false,
     unfurl_media: false
-  });
+    });
+
+    logger.info(`Successfully posted message in channel ${channelId}`);
+    return result;
+  } catch (error) {
+    logger.error(`Failed to post message in channel ${channelId}:`, error);
+    throw error;
+  }
 }
 
 // Optimized rate command handler
 app.command('/rate', async ({ command, ack, respond, client }) => {
-  // Acknowledge immediately
   await ack();
 
   try {
-    // Check rate limit first
+    // Rate limit check...
     if (store.checkRateLimit(command.user_id)) {
       await respond({
         response_type: 'ephemeral',
@@ -152,40 +168,53 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    // Start channel resolution in parallel with rate limit entry
-    const [channelId] = await Promise.all([
-      (async () => {
-        if (command.channel_name === 'directmessage') {
-          const dmResponse = await client.conversations.open({
-            users: command.user_id
-          });
-          return dmResponse.channel?.id || command.channel_id;
-        }
-        return command.channel_id;
-      })(),
-      Promise.resolve(store.addRateLimitEntry(command.user_id))
-    ]);
-
-    const rating = store.createRating(command.user_id, channelId);
+    let channelId = command.channel_id;
     
-    // Post message with error handling
-    try {
-      await postRatingMessage(client, channelId, command.user_id, rating);
-    } catch (postError) {
-      logger.error('Error posting rating message:', postError);
-      throw new Error('Failed to post rating message');
+    if (command.channel_name === 'directmessage') {
+      try {
+        logger.info(`Opening DM with user ${command.user_id}`);
+        const dmResponse = await client.conversations.open({
+          users: command.user_id
+        });
+        if (dmResponse.channel && dmResponse.channel.id) {
+          channelId = dmResponse.channel.id;
+          logger.info(`Successfully opened DM channel ${channelId}`);
+        } else {
+          throw new Error('Failed to get DM channel ID');
+        }
+      } catch (dmError) {
+        logger.error('Error opening DM:', dmError);
+        throw new Error(`Unable to create rating in DM: ${dmError.message}`);
+      }
+    } else {
+      // For non-DM channels, verify access first
+      const canAccess = await verifyChannelAccess(client, channelId);
+      if (!canAccess) {
+        throw new Error(`Bot needs to be invited to the channel first`);
+      }
     }
 
-    logger.info(`New rating request created by ${command.user_id} in channel ${channelId}`);
+    store.addRateLimitEntry(command.user_id);
+    const rating = store.createRating(command.user_id, channelId);
+
+    await postRatingMessage(client, channelId, command.user_id, rating);
 
   } catch (error) {
     logger.error('Error handling rate command:', error);
+    let errorMessage = 'Sorry, something went wrong. ';
+    
+    if (error.message.includes('needs to be invited')) {
+      errorMessage += 'Please invite the bot to this channel first using /invite @rating-bot';
+    } else if (error.message.includes('DM')) {
+      errorMessage += 'Unable to send direct message. Please try again or contact support.';
+    } else {
+      errorMessage += error.message;
+    }
+
     await respond({
       response_type: 'ephemeral',
-      text: `Sorry, something went wrong. ${error.message}`
-    }).catch(respondError => 
-      logger.error('Error sending error response:', respondError)
-    );
+      text: errorMessage
+    });
   }
 });
 
