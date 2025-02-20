@@ -196,8 +196,6 @@ async function verifyChannelAccess(client, channelId) {
   }
 }
 
-// Rest of your code...
-
 app.command('/rate', async ({ command, ack, respond, client }) => {
   try {
     await ack();
@@ -210,13 +208,11 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    let targetId = command.channel_id; // Default to the channel ID from the payload
-    let isDM = command.channel_name === 'directmessage';
+    // Always use the channel_id from the command payload
+    const targetId = command.channel_id;
+    const isDM = command.channel_name === 'directmessage';
 
-    // If it's a DM, use the user ID to send the message directly to their inbox
-    if (isDM) {
-      targetId = command.user_id; // Use the user ID for DMs
-    } else {
+    if (!isDM) {
       // Verify channel access for non-DM channels
       const hasAccess = await verifyChannelAccess(client, targetId);
       if (!hasAccess) {
@@ -231,9 +227,9 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     store.addRateLimitEntry(command.user_id);
     const rating = store.createRating(command.user_id, targetId);
 
-    logger.info(`New rating request created by ${command.user_id} in ${isDM ? 'user inbox' : 'channel'} ${targetId}`);
+    logger.info(`New rating request created by ${command.user_id} in ${isDM ? 'DM channel' : 'channel'} ${targetId}`);
 
-    // Post the message to the target (user inbox or channel)
+    // Post the message directly to the channel_id from the command
     await postRatingMessage(client, targetId, command.user_id, rating);
 
   } catch (error) {
