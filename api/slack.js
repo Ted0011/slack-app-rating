@@ -170,11 +170,27 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    // Use the existing channel ID from the command payload
     let channelId = command.channel_id;
 
-    // Skip access verification for DMs
-    if (command.channel_name !== 'directmessage') {
+    // Handle DMs separately
+    if (command.channel_name === 'directmessage') {
+      try {
+        // Open or ensure the DM channel exists
+        const dmResponse = await client.conversations.open({
+          users: command.user_id
+        });
+        if (dmResponse.channel && dmResponse.channel.id) {
+          channelId = dmResponse.channel.id; // Use the new DM channel ID
+        }
+      } catch (dmError) {
+        logger.error('Error opening DM:', dmError);
+        await respond({
+          response_type: 'ephemeral',
+          text: '⚠️ Unable to create a DM channel with the bot. Please try again.'
+        });
+        return;
+      }
+    } else {
       // Verify channel access for non-DM channels
       const hasAccess = await verifyChannelAccess(client, channelId);
       if (!hasAccess) {
@@ -191,7 +207,7 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
 
     logger.info(`New rating request created by ${command.user_id} in channel ${channelId}`);
 
-    // Post the message to the existing DM channel
+    // Post the message to the channel
     await postRatingMessage(client, channelId, command.user_id, rating);
 
   } catch (error) {
@@ -202,7 +218,6 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     });
   }
 });
-
 //
 // Handle rating submission with immediate acknowledgment
 //
