@@ -87,6 +87,11 @@ const app = new App({
   processBeforeResponse: true
 });
 
+// Helper function to check if a channel is a DM
+function isDMChannel(channelId) {
+  return channelId.startsWith('D');
+}
+
 async function getUserFromDMChannel(client, channelId) {
   try {
     const result = await client.conversations.info({
@@ -175,16 +180,35 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    let targetId = command.channel_id; // Default to the channel ID from the payload
-    let isDM = command.channel_name === 'directmessage';
+    const targetId = command.channel_id; // Default to the channel ID from the payload
+    const isDM = isDMChannel(targetId);
 
     if (isDM) {
-      // Retrieve the user ID from the DM channel
-      const userId = await getUserFromDMChannel(slackClient, targetId);
-      if (!userId) {
-        throw new Error('Unable to retrieve user ID from DM channel');
+      try {
+        // Retrieve the user ID from the DM channel
+        const userId = await getUserFromDMChannel(slackClient, targetId);
+        if (!userId) {
+          throw new Error('Unable to retrieve user ID from DM channel');
+        }
+
+        // Ensure the bot is part of the DM
+        const channelInfo = await slackClient.conversations.info({ channel: targetId });
+        const users = channelInfo.channel?.users;
+        const botUserId = process.env.SLACK_BOT_USER_ID;
+
+        if (!users || !users.includes(botUserId)) {
+          throw new Error('The bot is not part of this DM. Please add the bot to the DM and try again.');
+        }
+
+        // Use the user ID for DMs
+        targetId = userId;
+      } catch (error) {
+        await respond({
+          response_type: 'ephemeral',
+          text: `⚠️ ${error.message}`
+        });
+        return;
       }
-      targetId = userId; // Use the user ID for DMs
     } else {
       // Verify channel access for non-DM channels
       const hasAccess = await verifyChannelAccess(slackClient, targetId);
