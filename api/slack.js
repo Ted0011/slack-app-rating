@@ -88,55 +88,27 @@ const app = new App({
 });
 
 // Helper function to check if a channel is a DM
-async function isDMChannel(client, channelId) {
-  try {
-    const result = await client.conversations.info({ channel: channelId });
-    return result.channel.is_im === true;
-  } catch (error) {
-    logger.error('Error checking if channel is DM:', error);
-    return false;
-  }
+function isDMChannel(channelId) {
+  return channelId.startsWith('D');
 }
 
 async function getUserFromDMChannel(client, channelId) {
   try {
-    // First verify this is actually a DM channel
-    const isDM = await isDMChannel(client, channelId);
-    if (!isDM) {
-      throw new Error('This command can only be used in direct messages.');
-    }
-
-    // Get the members in the DM
-    const members = await client.conversations.members({
-      channel: channelId
+    const result = await client.conversations.info({
+      channel: channelId,
     });
 
-    if (!members.members || members.members.length !== 2) {
-      throw new Error('Invalid DM channel configuration');
+    // For DMs, the users array contains the two users in the conversation
+    const users = result.channel?.users;
+    if (users && users.length === 2) {
+      // Exclude the bot's user ID and return the other user's ID
+      const botUserId = process.env.SLACK_BOT_USER_ID; // Ensure you have the bot's user ID in your environment variables
+      return users.find((user) => user !== botUserId);
     }
-
-    // Get bot's own info
-    const botInfo = await client.auth.test();
-    const botUserId = botInfo.user_id;
-
-    // Find the other user in the DM (not the bot)
-    const otherUserId = members.members.find(id => id !== botUserId);
-    if (!otherUserId) {
-      throw new Error('Could not identify the target user in this conversation');
-    }
-
-    return otherUserId;
+    return null;
   } catch (error) {
-    if (error.data?.error === 'channel_not_found') {
-      logger.error('Cannot access DM channel:', error);
-      throw new Error('Cannot access this conversation. Please make sure to:\n' +
-        '1. Add the bot to your DM first\n' +
-        '2. Use the format: /rate @username\n' +
-        '3. Ensure the bot has the necessary permissions');
-    }
-    
-    logger.error('Error in DM channel operation:', error);
-    throw new Error(error.message || 'An error occurred while processing your request');
+    logger.error('Error retrieving user from DM channel:', error);
+    throw error;
   }
 }
 
@@ -200,26 +172,6 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
   try {
     await ack();
 
-    // Extract the target user from the command text
-    const targetUser = command.text.trim();
-    if (!targetUser || !targetUser.startsWith('@')) {
-      await respond({
-        text: 'Please specify a user to rate using the format: /rate @username',
-        response_type: 'ephemeral'
-      });
-      return;
-    }
-
-    // Verify we're in a DM channel
-    const isDM = await isDMChannel(client, command.channel_id);
-    if (!isDM) {
-      await respond({
-        text: 'The /rate command can only be used in direct messages with the bot.',
-        response_type: 'ephemeral'
-      });
-      return;
-    }
-
     if (store.checkRateLimit(command.user_id)) {
       await respond({
         response_type: 'ephemeral',
@@ -228,28 +180,55 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    try {
-      // Retrieve the user ID from the DM channel
-      const userId = await getUserFromDMChannel(client, command.channel_id);
-      if (!userId) {
-        throw new Error('Unable to retrieve user ID from DM channel');
+    const targetId = command.channel_id; // Default to the channel ID from the payload
+    const isDM = isDMChannel(targetId);
+
+    if (isDM) {
+      try {
+        // Retrieve the user ID from the DM channel
+        const userId = await getUserFromDMChannel(slackClient, targetId);
+        if (!userId) {
+          throw new Error('Unable to retrieve user ID from DM channel');
+        }
+
+        // Ensure the bot is part of the DM
+        const channelInfo = await slackClient.conversations.info({ channel: targetId });
+        const users = channelInfo.channel?.users;
+        const botUserId = process.env.SLACK_BOT_USER_ID;
+
+        if (!users || !users.includes(botUserId)) {
+          throw new Error('The bot is not part of this DM. Please add the bot to the DM and try again.');
+        }
+
+        // Use the user ID for DMs
+        targetId = userId;
+      } catch (error) {
+        await respond({
+          response_type: 'ephemeral',
+          text: `⚠️ ${error.message}`
+        });
+        return;
       }
-
-      // Create a new rating request
-      const rating = store.createRating(command.user_id, command.channel_id);
-
-      logger.info(`New rating request created by ${command.user_id} in user inbox ${command.channel_id}`);
-
-      // Post the message to the target (user inbox or channel)
-      await postRatingMessage(client, command.channel_id, command.user_id, rating);
-
-    } catch (error) {
-      await respond({
-        response_type: 'ephemeral',
-        text: `⚠️ ${error.message}`
-      });
-      return;
+    } else {
+      // Verify channel access for non-DM channels
+      const hasAccess = await verifyChannelAccess(slackClient, targetId);
+      if (!hasAccess) {
+        await respond({
+          response_type: 'ephemeral',
+          text: '⚠️ The bot does not have access to this channel. Please add the bot to the channel and try again.'
+        });
+        return;
+      }
     }
+
+    store.addRateLimitEntry(command.user_id);
+    const rating = store.createRating(command.user_id, targetId);
+
+    logger.info(`New rating request created by ${command.user_id} in ${isDM ? 'user inbox' : 'channel'} ${targetId}`);
+
+    // Post the message to the target (user inbox or channel)
+    await postRatingMessage(slackClient, targetId, command.user_id, rating);
+
   } catch (error) {
     logger.error('Error handling rate command:', error);
     await respond({
