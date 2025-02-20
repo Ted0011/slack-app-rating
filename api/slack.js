@@ -180,7 +180,6 @@ async function postRatingMessage(client, channelId, requesterId, rating) {
     unfurl_media: false
   });
 }
-
 // Move verifyChannelAccess function to the top, near postRatingMessage
 async function verifyChannelAccess(client, channelId) {
   try {
