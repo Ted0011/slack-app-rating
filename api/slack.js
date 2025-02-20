@@ -112,23 +112,69 @@ async function getUserFromDMChannel(client, channelId) {
   }
 }
 
+async function extractUserIdFromText(client, text) {
+  // Handle different formats of user mentions/ids
+  let userId = text.trim();
+  
+  // Handle <@USER_ID> format
+  if (userId.startsWith('<@') && userId.endsWith('>')) {
+    userId = userId.slice(2, -1);
+    // Handle any additional formatting like |username
+    if (userId.includes('|')) {
+      userId = userId.split('|')[0];
+    }
+  }
+
+  // Verify the user exists
+  try {
+    const result = await client.users.info({
+      user: userId
+    });
+    
+    if (!result.ok || !result.user) {
+      throw new Error('User not found');
+    }
+    
+    return result.user.id;
+  } catch (error) {
+    logger.error('Error verifying user:', error);
+    throw new Error('Invalid user mentioned. Please make sure you @mention a valid user.');
+  }
+}
+
 async function openDMChannel(client, userId) {
   try {
-    // Open a DM channel with the user
+    // First check if a DM channel already exists
+    const conversationsResult = await client.conversations.list({
+      types: 'im'
+    });
+
+    if (conversationsResult.channels) {
+      const existingDM = conversationsResult.channels.find(
+        channel => channel.user === userId
+      );
+
+      if (existingDM) {
+        return existingDM.id;
+      }
+    }
+
+    // If no existing DM found, try to open a new one
     const result = await client.conversations.open({
       users: userId
     });
-    
+
     if (!result.ok || !result.channel?.id) {
       throw new Error('Failed to open DM channel');
     }
-    
+
     return result.channel.id;
   } catch (error) {
-    logger.error('Error opening DM channel:', error);
-    throw new Error('Unable to open DM channel with the user');
+    logger.error('Error in openDMChannel:', error);
+    throw new Error('Unable to open DM channel with the user. Make sure the bot has the necessary permissions and the user is valid.');
   }
 }
+
 
 async function handleDMRating(client, command) {
   // Extract the user ID from the @mention
@@ -220,17 +266,36 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     const isDM = command.channel_name === 'directmessage';
 
     if (isDM) {
-      // Handle DM rating
+      // Require @mention in DMs
       if (!command.text) {
         await respond({
           response_type: 'ephemeral',
-          text: '⚠️ Please @mention the user you want to rate when using this command in a DM'
+          text: '⚠️ Please @mention the user you want to rate (e.g. `/rate @username`)'
         });
         return;
       }
 
-      const dmResult = await handleDMRating(client, command);
-      targetId = dmResult.channelId;
+      try {
+        // Extract and verify user ID
+        const userId = await extractUserIdFromText(client, command.text);
+        
+        if (userId === command.user_id) {
+          await respond({
+            response_type: 'ephemeral',
+            text: '⚠️ You cannot rate yourself'
+          });
+          return;
+        }
+
+        // Try to open DM channel
+        targetId = await openDMChannel(client, userId);
+      } catch (error) {
+        await respond({
+          response_type: 'ephemeral',
+          text: `⚠️ ${error.message}`
+        });
+        return;
+      }
     }
 
     store.addRateLimitEntry(command.user_id);
@@ -238,18 +303,25 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
 
     logger.info(`New rating request created by ${command.user_id} in ${isDM ? 'DM' : 'channel'} ${targetId}`);
 
-    // Post the rating message
-    await postRatingMessage(client, targetId, command.user_id, rating);
+    try {
+      await postRatingMessage(client, targetId, command.user_id, rating);
+    } catch (error) {
+      logger.error('Error posting rating message:', error);
+      await respond({
+        response_type: 'ephemeral',
+        text: '⚠️ Unable to send rating request. Please make sure the bot has permission to message the user.'
+      });
+      return;
+    }
 
   } catch (error) {
     logger.error('Error handling rate command:', error);
     await respond({
       response_type: 'ephemeral',
-      text: `⚠️ ${error.message}`
+      text: `⚠️ An unexpected error occurred: ${error.message}`
     });
   }
 });
-
 app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond, client }) => {
   await ack(); // Acknowledge immediately
 
