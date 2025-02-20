@@ -1,5 +1,6 @@
 const { createServer } = require('http');
 const { App, ExpressReceiver } = require('@slack/bolt');
+const { WebClient } = require('@slack/web-api');
 const winston = require('winston');
 require('dotenv').config();
 
@@ -76,6 +77,9 @@ class RatingStore {
 
 const store = new RatingStore();
 
+// Initialize Slack WebClient
+const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
+
 // Initialize Slack app
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -103,7 +107,7 @@ async function getUserFromDMChannel(client, channelId) {
   }
 }
 
-/*async function verifyChannelAccess(client, channelId) {
+async function verifyChannelAccess(client, channelId) {
   try {
     // Try to get channel info to verify access
     await client.conversations.info({
@@ -116,49 +120,7 @@ async function getUserFromDMChannel(client, channelId) {
     }
     throw error; // Rethrow other errors
   }
-}*/
-
-// Add this function near the top of your slack.js file, after initializing the app
-/*async function postRatingMessage(client, channelId, requesterId, rating) {
-  return await client.chat.postMessage({
-    channel: channelId,
-    text: `${requesterId} has requested a rating!`, // Fallback text for notifications
-    blocks: [
-      {
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `<@${requesterId}> has requested a rating!`
-        }
-      },
-      {
-        type: "actions",
-        block_id: `rating_${rating.id}`,
-        elements: [
-          {
-            type: "radio_buttons",
-            action_id: "star_rating",
-            options: [
-              { text: { type: "plain_text", text: "⭐" }, value: "1" },
-              { text: { type: "plain_text", text: "⭐⭐" }, value: "2" },
-              { text: { type: "plain_text", text: "⭐⭐⭐" }, value: "3" },
-              { text: { type: "plain_text", text: "⭐⭐⭐⭐" }, value: "4" },
-              { text: { type: "plain_text", text: "⭐⭐⭐⭐⭐" }, value: "5" }
-            ]
-          },
-          {
-            type: "button",
-            text: { type: "plain_text", text: "Submit Rating" },
-            action_id: "submit_rating",
-            style: "primary"
-          }
-        ]
-      }
-    ],
-    unfurl_links: false,
-    unfurl_media: false
-  });
-}*/
+}
 
 async function postRatingMessage(client, channelId, requesterId, rating) {
   return await client.chat.postMessage({
@@ -200,66 +162,6 @@ async function postRatingMessage(client, channelId, requesterId, rating) {
     unfurl_media: false
   });
 }
-// Move verifyChannelAccess function to the top, near postRatingMessage
-async function verifyChannelAccess(client, channelId) {
-  try {
-    // Try to get channel info to verify access
-    await client.conversations.info({
-      channel: channelId
-    });
-    return true;
-  } catch (error) {
-    if (error.data?.error === 'channel_not_found') {
-      return false;
-    }
-    throw error; // Rethrow other errors
-  }
-}
-
-/*app.command('/rate', async ({ command, ack, respond, client }) => {
-  try {
-    await ack();
-
-    if (store.checkRateLimit(command.user_id)) {
-      await respond({
-        response_type: 'ephemeral',
-        text: '⚠️ Rate limit exceeded. Please try again later.'
-      });
-      return;
-    }
-
-    // Always use the channel_id directly from the payload
-    const targetId = command.channel_id;
-    const isDM = command.channel_name === 'directmessage';
-
-    if (!isDM) {
-      // Only verify channel access for non-DM channels
-      const hasAccess = await verifyChannelAccess(client, targetId);
-      if (!hasAccess) {
-        await respond({
-          response_type: 'ephemeral',
-          text: '⚠️ The bot does not have access to this channel. Please add the bot to the channel and try again.'
-        });
-        return;
-      }
-    }
-
-    store.addRateLimitEntry(command.user_id);
-    const rating = store.createRating(command.user_id, targetId);
-
-    logger.info(`New rating request created by ${command.user_id} in ${isDM ? 'DM channel' : 'channel'} ${targetId}`);
-
-    // Post directly to the channel_id from the payload
-    await postRatingMessage(client, targetId, command.user_id, rating);
-
-  } catch (error) {
-    logger.error('Error handling rate command:', error);
-    await respond({
-      response_type: 'ephemeral',
-      text: `Sorry, something went wrong. ${error.message}`
-    });
-  }
-});*/
 
 app.command('/rate', async ({ command, ack, respond, client }) => {
   try {
@@ -278,14 +180,14 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
 
     if (isDM) {
       // Retrieve the user ID from the DM channel
-      const userId = await getUserFromDMChannel(client, targetId);
+      const userId = await getUserFromDMChannel(slackClient, targetId);
       if (!userId) {
         throw new Error('Unable to retrieve user ID from DM channel');
       }
       targetId = userId; // Use the user ID for DMs
     } else {
       // Verify channel access for non-DM channels
-      const hasAccess = await verifyChannelAccess(client, targetId);
+      const hasAccess = await verifyChannelAccess(slackClient, targetId);
       if (!hasAccess) {
         await respond({
           response_type: 'ephemeral',
@@ -301,7 +203,7 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     logger.info(`New rating request created by ${command.user_id} in ${isDM ? 'user inbox' : 'channel'} ${targetId}`);
 
     // Post the message to the target (user inbox or channel)
-    await postRatingMessage(client, targetId, command.user_id, rating);
+    await postRatingMessage(slackClient, targetId, command.user_id, rating);
 
   } catch (error) {
     logger.error('Error handling rate command:', error);
@@ -311,41 +213,6 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     });
   }
 });
-
-//
-// Handle rating submission with immediate acknowledgment
-//
-module.exports = async (req, res) => {
-  if (req.method === 'POST') {
-    try {
-      const payload = req.body;
-
-      // Log the incoming payload for debugging
-      logger.info('Incoming payload:', { payload });
-
-      if (payload.type === 'url_verification') {
-        return res.json({ challenge: payload.challenge });
-      }
-
-      // Parse the nested payload if it exists
-      if (payload.payload) {
-        const parsedPayload = JSON.parse(payload.payload);
-        req.body = parsedPayload; // Replace the body with the parsed payload
-      }
-
-      // Handle the request through the receiver
-      await receiver.requestHandler(req, res);
-    } catch (error) {
-      logger.error('Error processing request:', error);
-      return res.status(500).json({ error: 'Failed to process request' });
-    }
-  } else if (req.method === 'GET') {
-    res.status(200).json({ status: 'ok' });
-  } else {
-    res.status(405).json({ error: 'Method not allowed' });
-  }
-};
-
 
 app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond, client }) => {
   await ack(); // Acknowledge immediately
@@ -379,7 +246,7 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
     logger.info(`Rating completed: ${reviewerId} rated ${rating.requesterId} with ${selectedRating} stars`);
 
     // Post the final rating message
-    await client.chat.postMessage({
+    await slackClient.chat.postMessage({
       channel: rating.channelId,
       text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ⭐`,
       blocks: [
@@ -404,7 +271,7 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
 
     // Delete the original message
     try {
-      await client.chat.delete({
+      await slackClient.chat.delete({
         channel: rating.channelId,
         ts: body.message.ts
       });
@@ -419,3 +286,34 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
     });
   }
 });
+
+module.exports = async (req, res) => {
+  if (req.method === 'POST') {
+    try {
+      const payload = req.body;
+
+      // Log the incoming payload for debugging
+      logger.info('Incoming payload:', { payload });
+
+      if (payload.type === 'url_verification') {
+        return res.json({ challenge: payload.challenge });
+      }
+
+      // Parse the nested payload if it exists
+      if (payload.payload) {
+        const parsedPayload = JSON.parse(payload.payload);
+        req.body = parsedPayload; // Replace the body with the parsed payload
+      }
+
+      // Handle the request through the receiver
+      await receiver.requestHandler(req, res);
+    } catch (error) {
+      logger.error('Error processing request:', error);
+      return res.status(500).json({ error: 'Failed to process request' });
+    }
+  } else if (req.method === 'GET') {
+    res.status(200).json({ status: 'ok' });
+  } else {
+    res.status(405).json({ error: 'Method not allowed' });
+  }
+};
