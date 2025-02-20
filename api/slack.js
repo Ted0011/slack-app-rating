@@ -208,26 +208,12 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    let targetId = command.channel_id;
+    // Always use the channel_id directly from the payload
+    const targetId = command.channel_id;
     const isDM = command.channel_name === 'directmessage';
 
-    if (isDM) {
-      // If it's a DM, we need to open/get the DM channel first
-      try {
-        const result = await client.conversations.open({
-          users: command.user_id
-        });
-        targetId = result.channel.id;
-      } catch (error) {
-        logger.error('Error opening DM channel:', error);
-        await respond({
-          response_type: 'ephemeral',
-          text: '⚠️ Unable to open DM channel. Please try again.'
-        });
-        return;
-      }
-    } else {
-      // Verify channel access for non-DM channels
+    if (!isDM) {
+      // Only verify channel access for non-DM channels
       const hasAccess = await verifyChannelAccess(client, targetId);
       if (!hasAccess) {
         await respond({
@@ -243,7 +229,7 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
 
     logger.info(`New rating request created by ${command.user_id} in ${isDM ? 'DM channel' : 'channel'} ${targetId}`);
 
-    // Post the message to the target channel
+    // Post directly to the channel_id from the payload
     await postRatingMessage(client, targetId, command.user_id, rating);
 
   } catch (error) {
