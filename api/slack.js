@@ -250,6 +250,74 @@ async function postRatingMessage(client, channelId, requesterId, rating) {
   });
 }
 
+async function extractUserIdFromText(client, text) {
+  try {
+    // Remove @ symbol if present and trim whitespace
+    let username = text.trim().replace(/^@/, '');
+
+    // If it's already in <@USER_ID> format, extract the ID
+    if (username.startsWith('<@') && username.endsWith('>')) {
+      return username.slice(2, -1).split('|')[0];
+    }
+
+    // Look up user by email if it looks like an email
+    if (username.includes('@') && username.includes('.')) {
+      try {
+        const result = await client.users.lookupByEmail({
+          email: username
+        });
+        if (result.ok && result.user) {
+          return result.user.id;
+        }
+      } catch (error) {
+        // If email lookup fails, continue to username lookup
+        logger.debug('Email lookup failed, trying username lookup:', error);
+      }
+    }
+
+    // List all users and find by username
+    const result = await client.users.list();
+
+    if (!result.ok || !result.members) {
+      throw new Error('Failed to fetch users list');
+    }
+
+    // Try to find user by display name, real name, or username
+    const user = result.members.find(member =>
+      (member.profile?.display_name?.toLowerCase() === username.toLowerCase()) ||
+      (member.profile?.real_name?.toLowerCase() === username.toLowerCase()) ||
+      (member.name?.toLowerCase() === username.toLowerCase())
+    );
+
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    return user.id;
+  } catch (error) {
+    logger.error('Error in extractUserIdFromText:', error);
+    throw new Error('Invalid user mentioned. Please make sure you @mention a valid user.');
+  }
+}
+
+async function openDMChannel(client, userId) {
+  try {
+    // Try to open a DM channel
+    const result = await client.conversations.open({
+      users: userId
+    });
+
+    if (!result.ok || !result.channel?.id) {
+      throw new Error('Failed to open DM channel');
+    }
+
+    return result.channel.id;
+  } catch (error) {
+    logger.error('Error in openDMChannel:', error);
+    throw new Error('Unable to open DM channel with the user. Please try again.');
+  }
+}
+
 app.command('/rate', async ({ command, ack, respond, client }) => {
   try {
     await ack();
@@ -266,17 +334,17 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     const isDM = command.channel_name === 'directmessage';
 
     if (isDM) {
-      // Require @mention in DMs
+      // Require username in DMs
       if (!command.text) {
         await respond({
           response_type: 'ephemeral',
-          text: '⚠️ Please @mention the user you want to rate (e.g. `/rate @username`)'
+          text: '⚠️ Please provide the username you want to rate (e.g. `/rate @username`)'
         });
         return;
       }
 
       try {
-        // Extract and verify user ID
+        // Extract and verify user ID from username
         const userId = await extractUserIdFromText(client, command.text);
         
         if (userId === command.user_id) {
@@ -289,6 +357,7 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
 
         // Try to open DM channel
         targetId = await openDMChannel(client, userId);
+        
       } catch (error) {
         await respond({
           response_type: 'ephemeral',
@@ -309,9 +378,8 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       logger.error('Error posting rating message:', error);
       await respond({
         response_type: 'ephemeral',
-        text: '⚠️ Unable to send rating request. Please make sure the bot has permission to message the user.'
+        text: '⚠️ Unable to send rating request. Please verify the username and try again.'
       });
-      return;
     }
 
   } catch (error) {
@@ -322,6 +390,7 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     });
   }
 });
+
 app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond, client }) => {
   await ack(); // Acknowledge immediately
 
