@@ -191,6 +191,7 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
 
     logger.info(`New rating request created by ${command.user_id} in channel ${channelId}`);
 
+    // Post the message to the existing DM channel
     await postRatingMessage(client, channelId, command.user_id, rating);
 
   } catch (error) {
