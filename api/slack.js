@@ -260,22 +260,7 @@ async function extractUserIdFromText(client, text) {
       return username.slice(2, -1).split('|')[0];
     }
 
-    // Look up user by email if it looks like an email
-    if (username.includes('@') && username.includes('.')) {
-      try {
-        const result = await client.users.lookupByEmail({
-          email: username
-        });
-        if (result.ok && result.user) {
-          return result.user.id;
-        }
-      } catch (error) {
-        // If email lookup fails, continue to username lookup
-        logger.debug('Email lookup failed, trying username lookup:', error);
-      }
-    }
-
-    // List all users and find by username
+    // Look up user by username
     const result = await client.users.list();
 
     if (!result.ok || !result.members) {
@@ -302,7 +287,6 @@ async function extractUserIdFromText(client, text) {
 
 async function openDMChannel(client, userId) {
   try {
-    // Try to open a DM channel
     const result = await client.conversations.open({
       users: userId
     });
@@ -316,6 +300,45 @@ async function openDMChannel(client, userId) {
     logger.error('Error in openDMChannel:', error);
     throw new Error('Unable to open DM channel with the user. Please try again.');
   }
+}
+
+async function postRatingMessage(client, channelId, requesterId, reviewerId, rating) {
+  return await client.chat.postMessage({
+    channel: channelId,
+    text: `<@${requesterId}> has requested a rating from <@${reviewerId}>!`,
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `<@${requesterId}> has requested a rating from <@${reviewerId}>!`
+        }
+      },
+      {
+        type: "actions",
+        block_id: `rating_${rating.id}`,
+        elements: [
+          {
+            type: "radio_buttons",
+            action_id: "star_rating",
+            options: [
+              { text: { type: "plain_text", text: "⭐" }, value: "1" },
+              { text: { type: "plain_text", text: "⭐⭐" }, value: "2" },
+              { text: { type: "plain_text", text: "⭐⭐⭐" }, value: "3" },
+              { text: { type: "plain_text", text: "⭐⭐⭐⭐" }, value: "4" },
+              { text: { type: "plain_text", text: "⭐⭐⭐⭐⭐" }, value: "5" }
+            ]
+          },
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Submit Rating" },
+            action_id: "submit_rating",
+            style: "primary"
+          }
+        ]
+      }
+    ]
+  });
 }
 
 app.command('/rate', async ({ command, ack, respond, client }) => {
@@ -334,52 +357,40 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     const isDM = command.channel_name === 'directmessage';
 
     if (isDM) {
-      // Require username in DMs
       if (!command.text) {
         await respond({
           response_type: 'ephemeral',
-          text: '⚠️ Please provide the username you want to rate (e.g. `/rate @username`)'
+          text: '⚠️ Please provide the username who should rate you (e.g. `/rate @username`)'
         });
         return;
       }
 
       try {
-        // Extract and verify user ID from username
-        const userId = await extractUserIdFromText(client, command.text);
-        
-        if (userId === command.user_id) {
-          await respond({
-            response_type: 'ephemeral',
-            text: '⚠️ You cannot rate yourself'
-          });
-          return;
-        }
+        // Extract the reviewer's user ID from the mentioned username
+        const reviewerId = await extractUserIdFromText(client, command.text);
 
-        // Try to open DM channel
-        targetId = await openDMChannel(client, userId);
-        
+        // Open DM channel with the reviewer
+        targetId = await openDMChannel(client, reviewerId);
+
+        store.addRateLimitEntry(command.user_id);
+        const rating = store.createRating(command.user_id, targetId);
+
+        logger.info(`New rating request created by ${command.user_id} to be rated by ${reviewerId}`);
+
+        await postRatingMessage(client, targetId, command.user_id, reviewerId, rating);
+
+        // Notify the requester
+        await respond({
+          response_type: 'ephemeral',
+          text: `✅ Rating request sent to <@${reviewerId}>`
+        });
+
       } catch (error) {
         await respond({
           response_type: 'ephemeral',
           text: `⚠️ ${error.message}`
         });
-        return;
       }
-    }
-
-    store.addRateLimitEntry(command.user_id);
-    const rating = store.createRating(command.user_id, targetId);
-
-    logger.info(`New rating request created by ${command.user_id} in ${isDM ? 'DM' : 'channel'} ${targetId}`);
-
-    try {
-      await postRatingMessage(client, targetId, command.user_id, rating);
-    } catch (error) {
-      logger.error('Error posting rating message:', error);
-      await respond({
-        response_type: 'ephemeral',
-        text: '⚠️ Unable to send rating request. Please verify the username and try again.'
-      });
     }
 
   } catch (error) {
@@ -391,16 +402,11 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
   }
 });
 
+// Update the action handler to validate the correct reviewer
 app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond, client }) => {
-  await ack(); // Acknowledge immediately
-
   try {
-    // Handle the action
-    if (action.action_id === 'star_rating') {
-      return; // Do nothing for star rating selection
-    }
+    await ack();
 
-    // Handle submit_rating action
     const ratingId = body.actions[0].block_id.split('_')[1];
     const reviewerId = body.user.id;
 
@@ -409,30 +415,29 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
       throw new Error('Rating request not found');
     }
 
-    if (rating.requesterId === reviewerId) {
-      throw new Error('You cannot rate yourself');
+    // Get the mentioned user ID from the message
+    const messageText = body.message.blocks[0].text.text;
+    const mentionedReviewerId = messageText.match(/from <@([^>]+)>/)[1];
+
+    // Verify the person submitting the rating is the requested reviewer
+    if (reviewerId !== mentionedReviewerId) {
+      throw new Error('Only the requested reviewer can submit this rating');
     }
 
-    const selectedRating = body.state.values[`rating_${ratingId}`]?.star_rating?.selected_option?.value;
-    if (!selectedRating) {
-      throw new Error('Please select a rating before submitting');
-    }
-
+    const selectedRating = body.state.values[`rating_${ratingId}`].star_rating.selected_option.value;
     store.updateRating(ratingId, reviewerId, parseInt(selectedRating));
 
-    logger.info(`Rating completed: ${reviewerId} rated ${rating.requesterId} with ${selectedRating} stars`);
-
     // Post the final rating message
-    await slackClient.chat.postMessage({
+    await client.chat.postMessage({
       channel: rating.channelId,
-      text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ⭐`,
+      text: `<@${rating.requesterId}> received a ${selectedRating}⭐ rating from <@${reviewerId}>`,
       blocks: [
         {
           type: "context",
           elements: [
             {
               type: "mrkdwn",
-              text: `Rating submitted on <!date^${Math.floor(Date.now() / 1000)}^{date_short_pretty} at {time}|${new Date().toLocaleString()}>`
+              text: `Rating submitted on <!date^${Math.floor(Date.now()/1000)}^{date_short_pretty} at {time}|${new Date().toLocaleString()}>`
             }
           ]
         },
@@ -440,7 +445,7 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
           type: "section",
           text: {
             type: "mrkdwn",
-            text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ${'⭐'.repeat(parseInt(selectedRating))}`
+            text: `<@${rating.requesterId}> received a ${selectedRating} ${'⭐'.repeat(parseInt(selectedRating))} rating from <@${reviewerId}>`
           }
         }
       ]
@@ -448,49 +453,19 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
 
     // Delete the original message
     try {
-      await slackClient.chat.delete({
+      await client.chat.delete({
         channel: rating.channelId,
         ts: body.message.ts
       });
     } catch (error) {
       logger.error('Error deleting message:', error);
     }
+
   } catch (error) {
-    logger.error('Error processing action:', error);
+    logger.error('Error submitting rating:', error);
     await respond({
-      response_type: 'ephemeral',
-      text: `Error: ${error.message}`
+      text: `Error: ${error.message}`,
+      response_type: 'ephemeral'
     });
   }
 });
-
-module.exports = async (req, res) => {
-  if (req.method === 'POST') {
-    try {
-      const payload = req.body;
-
-      // Log the incoming payload for debugging
-      logger.info('Incoming payload:', { payload });
-
-      if (payload.type === 'url_verification') {
-        return res.json({ challenge: payload.challenge });
-      }
-
-      // Parse the nested payload if it exists
-      if (payload.payload) {
-        const parsedPayload = JSON.parse(payload.payload);
-        req.body = parsedPayload; // Replace the body with the parsed payload
-      }
-
-      // Handle the request through the receiver
-      await receiver.requestHandler(req, res);
-    } catch (error) {
-      logger.error('Error processing request:', error);
-      return res.status(500).json({ error: 'Failed to process request' });
-    }
-  } else if (req.method === 'GET') {
-    res.status(200).json({ status: 'ok' });
-  } else {
-    res.status(405).json({ error: 'Method not allowed' });
-  }
-};
