@@ -99,9 +99,50 @@ const app = new App({
 }`
 
 // Add this function near the top of your slack.js file, after initializing the app
-async function postRatingMessage(client, channelId, requesterId, rating) {
+/*async function postRatingMessage(client, channelId, requesterId, rating) {
   return await client.chat.postMessage({
     channel: channelId,
+    text: `${requesterId} has requested a rating!`, // Fallback text for notifications
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `<@${requesterId}> has requested a rating!`
+        }
+      },
+      {
+        type: "actions",
+        block_id: `rating_${rating.id}`,
+        elements: [
+          {
+            type: "radio_buttons",
+            action_id: "star_rating",
+            options: [
+              { text: { type: "plain_text", text: "⭐" }, value: "1" },
+              { text: { type: "plain_text", text: "⭐⭐" }, value: "2" },
+              { text: { type: "plain_text", text: "⭐⭐⭐" }, value: "3" },
+              { text: { type: "plain_text", text: "⭐⭐⭐⭐" }, value: "4" },
+              { text: { type: "plain_text", text: "⭐⭐⭐⭐⭐" }, value: "5" }
+            ]
+          },
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Submit Rating" },
+            action_id: "submit_rating",
+            style: "primary"
+          }
+        ]
+      }
+    ],
+    unfurl_links: false,
+    unfurl_media: false
+  });
+}*/
+
+async function postRatingMessage(client, channelId, requesterId, rating) {
+  return await client.chat.postMessage({
+    channel: channelId, // Can be a user ID (for DMs) or channel ID (for channels)
     text: `${requesterId} has requested a rating!`, // Fallback text for notifications
     blocks: [
       {
@@ -170,29 +211,15 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    let channelId = command.channel_id;
+    let targetId = command.channel_id; // Default to the channel ID from the payload
+    let isDM = command.channel_name === 'directmessage';
 
-    // Handle DMs separately
-    if (command.channel_name === 'directmessage') {
-      try {
-        // Open or ensure the DM channel exists
-        const dmResponse = await client.conversations.open({
-          users: command.user_id
-        });
-        if (dmResponse.channel && dmResponse.channel.id) {
-          channelId = dmResponse.channel.id; // Use the new DM channel ID
-        }
-      } catch (dmError) {
-        logger.error('Error opening DM:', dmError);
-        await respond({
-          response_type: 'ephemeral',
-          text: '⚠️ Unable to create a DM channel with the bot. Please try again.'
-        });
-        return;
-      }
+    // If it's a DM, use the user ID to send the message directly to their inbox
+    if (isDM) {
+      targetId = command.user_id; // Use the user ID for DMs
     } else {
       // Verify channel access for non-DM channels
-      const hasAccess = await verifyChannelAccess(client, channelId);
+      const hasAccess = await verifyChannelAccess(client, targetId);
       if (!hasAccess) {
         await respond({
           response_type: 'ephemeral',
@@ -203,12 +230,12 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     }
 
     store.addRateLimitEntry(command.user_id);
-    const rating = store.createRating(command.user_id, channelId);
+    const rating = store.createRating(command.user_id, targetId);
 
-    logger.info(`New rating request created by ${command.user_id} in channel ${channelId}`);
+    logger.info(`New rating request created by ${command.user_id} in ${isDM ? 'user inbox' : 'channel'} ${targetId}`);
 
-    // Post the message to the channel
-    await postRatingMessage(client, channelId, command.user_id, rating);
+    // Post the message to the target (user inbox or channel)
+    await postRatingMessage(client, targetId, command.user_id, rating);
 
   } catch (error) {
     logger.error('Error handling rate command:', error);
