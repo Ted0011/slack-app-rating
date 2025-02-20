@@ -83,7 +83,27 @@ const app = new App({
   processBeforeResponse: true
 });
 
-`async function verifyChannelAccess(client, channelId) {
+async function getUserFromDMChannel(client, channelId) {
+  try {
+    const result = await client.conversations.info({
+      channel: channelId,
+    });
+
+    // For DMs, the users array contains the two users in the conversation
+    const users = result.channel?.users;
+    if (users && users.length === 2) {
+      // Exclude the bot's user ID and return the other user's ID
+      const botUserId = process.env.SLACK_BOT_USER_ID; // Ensure you have the bot's user ID in your environment variables
+      return users.find((user) => user !== botUserId);
+    }
+    return null;
+  } catch (error) {
+    logger.error('Error retrieving user from DM channel:', error);
+    throw error;
+  }
+}
+
+/*async function verifyChannelAccess(client, channelId) {
   try {
     // Try to get channel info to verify access
     await client.conversations.info({
@@ -96,7 +116,7 @@ const app = new App({
     }
     throw error; // Rethrow other errors
   }
-}`
+}*/
 
 // Add this function near the top of your slack.js file, after initializing the app
 /*async function postRatingMessage(client, channelId, requesterId, rating) {
@@ -196,7 +216,7 @@ async function verifyChannelAccess(client, channelId) {
   }
 }
 
-app.command('/rate', async ({ command, ack, respond, client }) => {
+/*app.command('/rate', async ({ command, ack, respond, client }) => {
   try {
     await ack();
 
@@ -230,6 +250,57 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     logger.info(`New rating request created by ${command.user_id} in ${isDM ? 'DM channel' : 'channel'} ${targetId}`);
 
     // Post directly to the channel_id from the payload
+    await postRatingMessage(client, targetId, command.user_id, rating);
+
+  } catch (error) {
+    logger.error('Error handling rate command:', error);
+    await respond({
+      response_type: 'ephemeral',
+      text: `Sorry, something went wrong. ${error.message}`
+    });
+  }
+});*/
+
+app.command('/rate', async ({ command, ack, respond, client }) => {
+  try {
+    await ack();
+
+    if (store.checkRateLimit(command.user_id)) {
+      await respond({
+        response_type: 'ephemeral',
+        text: '⚠️ Rate limit exceeded. Please try again later.'
+      });
+      return;
+    }
+
+    let targetId = command.channel_id; // Default to the channel ID from the payload
+    let isDM = command.channel_name === 'directmessage';
+
+    if (isDM) {
+      // Retrieve the user ID from the DM channel
+      const userId = await getUserFromDMChannel(client, targetId);
+      if (!userId) {
+        throw new Error('Unable to retrieve user ID from DM channel');
+      }
+      targetId = userId; // Use the user ID for DMs
+    } else {
+      // Verify channel access for non-DM channels
+      const hasAccess = await verifyChannelAccess(client, targetId);
+      if (!hasAccess) {
+        await respond({
+          response_type: 'ephemeral',
+          text: '⚠️ The bot does not have access to this channel. Please add the bot to the channel and try again.'
+        });
+        return;
+      }
+    }
+
+    store.addRateLimitEntry(command.user_id);
+    const rating = store.createRating(command.user_id, targetId);
+
+    logger.info(`New rating request created by ${command.user_id} in ${isDM ? 'user inbox' : 'channel'} ${targetId}`);
+
+    // Post the message to the target (user inbox or channel)
     await postRatingMessage(client, targetId, command.user_id, rating);
 
   } catch (error) {
