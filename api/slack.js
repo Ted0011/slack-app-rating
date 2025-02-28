@@ -265,15 +265,95 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     const channelId = command.channel_id;
     const isDM = isDMChannel(channelId);
 
-    // For DMs, explain the limitation and suggest alternatives
+    // For DMs, use ephemeral messages as a workaround
     if (isDM) {
       logger.info(`DM channel detected: ${channelId}`);
       
+      // Extract mentioned user if provided
+      let targetUserId = null;
+      if (command.text && command.text.trim()) {
+        const mentionText = command.text.trim();
+        
+        // Extract user ID from mention format: <@USERID>
+        const mentionMatch = mentionText.match(/<@([A-Z0-9]+)>/);
+        if (mentionMatch) {
+          targetUserId = mentionMatch[1];
+          logger.info(`User ID extracted from mention: ${targetUserId}`);
+        } 
+        // Handle plain @username format
+        else if (mentionText.startsWith('@')) {
+          const username = mentionText.substring(1); // Remove the @ symbol
+          try {
+            // Lookup user by username through users.list
+            const usersList = await client.users.list();
+            const matchingUser = usersList.members.find(
+              member => member.name === username || 
+                       member.profile?.display_name === username ||
+                       member.real_name === username
+            );
+            
+            if (matchingUser) {
+              targetUserId = matchingUser.id;
+              logger.info(`User ID found for username ${username}: ${targetUserId}`);
+            }
+          } catch (listError) {
+            logger.error('Error listing users:', listError);
+          }
+        }
+      }
+      
+      // If no valid target user was found, inform the requester
+      if (!targetUserId) {
+        await respond({
+          response_type: 'ephemeral',
+          text: '⚠️ Please specify a valid user to rate using @username format.'
+        });
+        return;
+      }
+      
+      // Create the rating in our data store
+      store.addRateLimitEntry(commanderId);
+      const rating = store.createRating(commanderId, channelId);
+      
+      logger.info(`New rating request created by ${commanderId} for user ${targetUserId}`);
+      
+      // Use respond to send an ephemeral message with the rating UI
       await respond({
         response_type: 'ephemeral',
-        text: "⚠️ The rating feature cannot be used in direct messages between users. Due to Slack API limitations, bots cannot post interactive messages in user-to-user DMs.\n\n*Please use the rating command in a shared channel instead.*"
+        text: `Rate <@${targetUserId}>`,
+        blocks: [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `You requested to rate <@${targetUserId}>`
+            }
+          },
+          {
+            type: "actions",
+            block_id: `rating_${rating.id}`,
+            elements: [
+              {
+                type: "radio_buttons",
+                action_id: "star_rating",
+                options: [
+                  { text: { type: "plain_text", text: "⭐" }, value: "1" },
+                  { text: { type: "plain_text", text: "⭐⭐" }, value: "2" },
+                  { text: { type: "plain_text", text: "⭐⭐⭐" }, value: "3" },
+                  { text: { type: "plain_text", text: "⭐⭐⭐⭐" }, value: "4" },
+                  { text: { type: "plain_text", text: "⭐⭐⭐⭐⭐" }, value: "5" }
+                ]
+              },
+              {
+                type: "button",
+                text: { type: "plain_text", text: "Submit Rating" },
+                action_id: "submit_rating",
+                style: "primary"
+              }
+            ]
+          }
+        ]
       });
-      return;
     } else {
       // Non-DM channel handling (unchanged)
       const hasAccess = await verifyChannelAccess(client, channelId);
@@ -285,30 +365,12 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
         return;
       }
       
-      // Extract mentioned user if provided
-      let targetMention = null;
-      if (command.text && command.text.trim()) {
-        targetMention = command.text.trim();
-      }
-      
       store.addRateLimitEntry(commanderId);
       const rating = store.createRating(commanderId, channelId);
       
       logger.info(`New rating request created by ${commanderId} in channel ${channelId}`);
       
-      // If a specific user was mentioned, customize the message
-      if (targetMention) {
-        // Try to extract the user ID from the mention
-        const mentionMatch = targetMention.match(/<@([A-Z0-9]+)>/);
-        if (mentionMatch) {
-          const targetUserId = mentionMatch[1];
-          await postTargetedRatingMessage(client, channelId, commanderId, targetUserId, rating);
-        } else {
-          await postRatingMessage(client, channelId, commanderId, rating);
-        }
-      } else {
-        await postRatingMessage(client, channelId, commanderId, rating);
-      }
+      await postRatingMessage(client, channelId, commanderId, rating);
     }
   } catch (error) {
     logger.error('Error handling rate command:', error);
@@ -319,6 +381,7 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
   }
 });
 
+// Update the action handler to handle ratings from ephemeral messages in DMs
 app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond, client }) => {
   await ack(); // Acknowledge immediately
 
@@ -350,38 +413,94 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
 
     logger.info(`Rating completed: ${reviewerId} rated ${rating.requesterId} with ${selectedRating} stars`);
 
-    // Post the final rating message
-    await slackClient.chat.postMessage({
-      channel: rating.channelId,
-      text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ⭐`,
-      blocks: [
-        {
-          type: "context",
-          elements: [
-            {
+    const isDM = isDMChannel(rating.channelId);
+    
+    if (isDM) {
+      // For ratings submitted from ephemeral messages in DMs
+      // Just update the ephemeral message to show the rating was submitted
+      await respond({
+        response_type: 'ephemeral',
+        replace_original: true,
+        text: `Rating submitted successfully!`,
+        blocks: [
+          {
+            type: "context",
+            elements: [
+              {
+                type: "mrkdwn",
+                text: `Rating submitted on <!date^${Math.floor(Date.now() / 1000)}^{date_short_pretty} at {time}|${new Date().toLocaleString()}>`
+              }
+            ]
+          },
+          {
+            type: "section",
+            text: {
               type: "mrkdwn",
-              text: `Rating submitted on <!date^${Math.floor(Date.now() / 1000)}^{date_short_pretty} at {time}|${new Date().toLocaleString()}>`
+              text: `You rated <@${rating.requesterId}> ${selectedRating} ${'⭐'.repeat(parseInt(selectedRating))}`
             }
-          ]
-        },
-        {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ${'⭐'.repeat(parseInt(selectedRating))}`
           }
-        }
-      ]
-    });
-
-    // Delete the original message
-    try {
-      await slackClient.chat.delete({
-        channel: rating.channelId,
-        ts: body.message.ts
+        ]
       });
-    } catch (error) {
-      logger.error('Error deleting message:', error);
+      
+      // Attempt to notify the rated user through a DM
+      try {
+        const targetDM = await client.conversations.open({
+          users: rating.requesterId
+        });
+        
+        if (targetDM.ok && targetDM.channel) {
+          await client.chat.postMessage({
+            channel: targetDM.channel.id,
+            text: `<@${reviewerId}> has rated you ${selectedRating} stars!`,
+            blocks: [
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: `<@${reviewerId}> has rated you ${selectedRating} ${'⭐'.repeat(parseInt(selectedRating))}`
+                }
+              }
+            ]
+          });
+        }
+      } catch (dmError) {
+        logger.error('Error sending DM notification:', dmError);
+      }
+    } else {
+      // For ratings in channels (unchanged)
+      // Post the final rating message
+      await client.chat.postMessage({
+        channel: rating.channelId,
+        text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ⭐`,
+        blocks: [
+          {
+            type: "context",
+            elements: [
+              {
+                type: "mrkdwn",
+                text: `Rating submitted on <!date^${Math.floor(Date.now() / 1000)}^{date_short_pretty} at {time}|${new Date().toLocaleString()}>`
+              }
+            ]
+          },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ${'⭐'.repeat(parseInt(selectedRating))}`
+            }
+          }
+        ]
+      });
+
+      // Delete the original message
+      try {
+        await client.chat.delete({
+          channel: rating.channelId,
+          ts: body.message.ts
+        });
+      } catch (error) {
+        logger.error('Error deleting message:', error);
+      }
     }
   } catch (error) {
     logger.error('Error processing action:', error);
