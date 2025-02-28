@@ -188,6 +188,26 @@ async function postRatingMessage(client, channelId, requesterId, rating) {
   });
 }
 
+// This could be added as an alternative approach if the above still fails
+async function openDirectMessageAndPost(client, userId, requesterId, rating) {
+  try {
+    // Open a DM with the user
+    const result = await client.conversations.open({
+      users: userId
+    });
+    
+    if (result.ok && result.channel && result.channel.id) {
+      // Post the rating message to the newly opened DM
+      await postRatingMessage(client, result.channel.id, requesterId, rating);
+      return true;
+    }
+    return false;
+  } catch (error) {
+    logger.error('Error opening DM:', error);
+    return false;
+  }
+}
+
 app.command('/rate', async ({ command, ack, respond, client }) => {
   try {
     await ack();
@@ -200,32 +220,53 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    const targetId = command.channel_id; // Default to the channel ID from the payload
+    const targetId = command.channel_id;
     const isDM = isDMChannel(targetId);
 
+    // For DMs, we'll need a different approach
     if (isDM) {
-  try {
-    // For DMs, we're already in the correct channel, so we can 
-    // just verify the bot has access by checking members
-    const result = await client.conversations.members({
-      channel: targetId,
-    });
-    
-    if (!result.members || !result.members.includes(process.env.SLACK_BOT_USER_ID)) {
-      throw new Error('The bot does not have access to this DM.');
-    }
-    
-    // No need to change targetId - keep using the DM channel ID
-  } catch (error) {
-    logger.error('Error handling DM rate command:', error);
-    await respond({
-      response_type: 'ephemeral',
-      text: `⚠️ ${error.message}`
-    });
-    return;
-  }
-} else {
-      // Verify channel access for non-DM channels
+      try {
+        logger.info(`DM channel detected: ${targetId}`);
+        
+        // Extract mentioned user from command text if provided
+        let recipientId = null;
+        if (command.text && command.text.trim().startsWith('@')) {
+          const usernameMention = command.text.trim();
+          
+          // Try to extract the user ID
+          // We might need to look up the user ID from user name if slack doesn't provide it directly
+          logger.info(`User mentioned in DM: ${usernameMention}`);
+          
+          // For now, we'll just log this but continue with the DM channel as is
+        }
+        
+        // For DMs, create the rating using the DM channel
+        store.addRateLimitEntry(command.user_id);
+        const rating = store.createRating(command.user_id, targetId);
+        
+        logger.info(`New rating request created by ${command.user_id} in DM channel ${targetId}`);
+        
+        // Try posting directly to the DM channel
+        try {
+          await postRatingMessage(slackClient, targetId, command.user_id, rating);
+        } catch (postError) {
+          logger.error('Error posting to DM channel:', postError);
+          await respond({
+            response_type: 'ephemeral',
+            text: '⚠️ Unable to send rating request in this DM. Please make sure the bot is added to the conversation.'
+          });
+          return;
+        }
+      } catch (dmError) {
+        logger.error('Error handling DM rate command:', dmError);
+        await respond({
+          response_type: 'ephemeral',
+          text: `⚠️ Error processing DM command: ${dmError.message}`
+        });
+        return;
+      }
+    } else {
+      // Non-DM channel handling (unchanged)
       const hasAccess = await verifyChannelAccess(slackClient, targetId);
       if (!hasAccess) {
         await respond({
@@ -234,16 +275,14 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
         });
         return;
       }
+      
+      store.addRateLimitEntry(command.user_id);
+      const rating = store.createRating(command.user_id, targetId);
+      
+      logger.info(`New rating request created by ${command.user_id} in channel ${targetId}`);
+      
+      await postRatingMessage(slackClient, targetId, command.user_id, rating);
     }
-
-    store.addRateLimitEntry(command.user_id);
-    const rating = store.createRating(command.user_id, targetId);
-
-    logger.info(`New rating request created by ${command.user_id} in ${isDM ? 'user inbox' : 'channel'} ${targetId}`);
-
-    // Post the message to the target (user inbox or channel)
-    await postRatingMessage(slackClient, targetId, command.user_id, rating);
-
   } catch (error) {
     logger.error('Error handling rate command:', error);
     await respond({
