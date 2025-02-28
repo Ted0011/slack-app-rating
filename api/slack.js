@@ -220,54 +220,126 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    const targetId = command.channel_id;
-    const isDM = isDMChannel(targetId);
+    const commanderId = command.user_id;
+    const channelId = command.channel_id;
+    const isDM = isDMChannel(channelId);
 
-    // For DMs, we'll need a different approach
+    // For DMs, we need a different approach
     if (isDM) {
-      try {
-        logger.info(`DM channel detected: ${targetId}`);
+      logger.info(`DM channel detected: ${channelId}`);
+      
+      // Extract the mentioned user from command text
+      let targetUserId = null;
+      if (command.text && command.text.trim()) {
+        const mentionText = command.text.trim();
         
-        // Extract mentioned user from command text if provided
-        let recipientId = null;
-        if (command.text && command.text.trim().startsWith('@')) {
-          const usernameMention = command.text.trim();
-          
-          // Try to extract the user ID
-          // We might need to look up the user ID from user name if slack doesn't provide it directly
-          logger.info(`User mentioned in DM: ${usernameMention}`);
-          
-          // For now, we'll just log this but continue with the DM channel as is
+        // Extract user ID from mention format: <@USERID>
+        const mentionMatch = mentionText.match(/<@([A-Z0-9]+)>/);
+        if (mentionMatch) {
+          targetUserId = mentionMatch[1];
+          logger.info(`User ID extracted from mention: ${targetUserId}`);
+        } 
+        // Handle plain @username format
+        else if (mentionText.startsWith('@')) {
+          const username = mentionText.substring(1); // Remove the @ symbol
+          try {
+            // Lookup user by username through users.list
+            const usersList = await client.users.list();
+            const matchingUser = usersList.members.find(
+              member => member.name === username || 
+                       member.profile?.display_name === username ||
+                       member.real_name === username
+            );
+            
+            if (matchingUser) {
+              targetUserId = matchingUser.id;
+              logger.info(`User ID found for username ${username}: ${targetUserId}`);
+            }
+          } catch (listError) {
+            logger.error('Error listing users:', listError);
+          }
         }
-        
-        // For DMs, create the rating using the DM channel
-        store.addRateLimitEntry(command.user_id);
-        const rating = store.createRating(command.user_id, targetId);
-        
-        logger.info(`New rating request created by ${command.user_id} in DM channel ${targetId}`);
-        
-        // Try posting directly to the DM channel
-        try {
-          await postRatingMessage(slackClient, targetId, command.user_id, rating);
-        } catch (postError) {
-          logger.error('Error posting to DM channel:', postError);
-          await respond({
-            response_type: 'ephemeral',
-            text: '⚠️ Unable to send rating request in this DM. Please make sure the bot is added to the conversation.'
-          });
-          return;
-        }
-      } catch (dmError) {
-        logger.error('Error handling DM rate command:', dmError);
+      }
+      
+      // If no valid target user was found, inform the requester
+      if (!targetUserId) {
         await respond({
           response_type: 'ephemeral',
-          text: `⚠️ Error processing DM command: ${dmError.message}`
+          text: '⚠️ Please specify a valid user to rate using @username format.'
         });
         return;
       }
+      
+      // Create the rating in our data store
+      store.addRateLimitEntry(commanderId);
+      const rating = store.createRating(commanderId, channelId);
+      
+      logger.info(`New rating request created by ${commanderId} for user ${targetUserId}`);
+      
+      // Send a message to the target user through the app home or direct message
+      try {
+        // Open a direct message with the target user
+        const botDmResult = await client.conversations.open({
+          users: targetUserId
+        });
+        
+        if (botDmResult.ok && botDmResult.channel) {
+          const botDmChannelId = botDmResult.channel.id;
+          
+          // Send the rating request message to the target user
+          await client.chat.postMessage({
+            channel: botDmChannelId,
+            text: `<@${commanderId}> has requested a rating!`,
+            blocks: [
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: `<@${commanderId}> has requested a rating!`
+                }
+              },
+              {
+                type: "actions",
+                block_id: `rating_${rating.id}`,
+                elements: [
+                  {
+                    type: "radio_buttons",
+                    action_id: "star_rating",
+                    options: [
+                      { text: { type: "plain_text", text: "⭐" }, value: "1" },
+                      { text: { type: "plain_text", text: "⭐⭐" }, value: "2" },
+                      { text: { type: "plain_text", text: "⭐⭐⭐" }, value: "3" },
+                      { text: { type: "plain_text", text: "⭐⭐⭐⭐" }, value: "4" },
+                      { text: { type: "plain_text", text: "⭐⭐⭐⭐⭐" }, value: "5" }
+                    ]
+                  },
+                  {
+                    type: "button",
+                    text: { type: "plain_text", text: "Submit Rating" },
+                    action_id: "submit_rating",
+                    style: "primary"
+                  }
+                ]
+              }
+            ]
+          });
+          
+          // Let the requester know the rating request was sent
+          await respond({
+            response_type: 'ephemeral',
+            text: `✅ Rating request sent to <@${targetUserId}>.`
+          });
+        }
+      } catch (dmError) {
+        logger.error('Error sending rating request to user:', dmError);
+        await respond({
+          response_type: 'ephemeral',
+          text: `⚠️ Error sending rating request to <@${targetUserId}>: ${dmError.message}`
+        });
+      }
     } else {
       // Non-DM channel handling (unchanged)
-      const hasAccess = await verifyChannelAccess(slackClient, targetId);
+      const hasAccess = await verifyChannelAccess(client, channelId);
       if (!hasAccess) {
         await respond({
           response_type: 'ephemeral',
@@ -276,12 +348,12 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
         return;
       }
       
-      store.addRateLimitEntry(command.user_id);
-      const rating = store.createRating(command.user_id, targetId);
+      store.addRateLimitEntry(commanderId);
+      const rating = store.createRating(commanderId, channelId);
       
-      logger.info(`New rating request created by ${command.user_id} in channel ${targetId}`);
+      logger.info(`New rating request created by ${commanderId} in channel ${channelId}`);
       
-      await postRatingMessage(slackClient, targetId, command.user_id, rating);
+      await postRatingMessage(client, channelId, commanderId, rating);
     }
   } catch (error) {
     logger.error('Error handling rate command:', error);
@@ -292,6 +364,7 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
   }
 });
 
+// Update the action handler to handle ratings from DMs
 app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond, client }) => {
   await ack(); // Acknowledge immediately
 
@@ -323,10 +396,11 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
 
     logger.info(`Rating completed: ${reviewerId} rated ${rating.requesterId} with ${selectedRating} stars`);
 
-    // Post the final rating message
-    await slackClient.chat.postMessage({
-      channel: rating.channelId,
-      text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ⭐`,
+    // Post the final rating message in the original channel and to the requester
+    // First, post in the bot's DM with the reviewer
+    await client.chat.postMessage({
+      channel: body.channel.id,
+      text: `Rating submitted: You rated <@${rating.requesterId}> ${selectedRating} ⭐`,
       blocks: [
         {
           type: "context",
@@ -341,16 +415,50 @@ app.action(/^(star_rating|submit_rating)$/, async ({ action, body, ack, respond,
           type: "section",
           text: {
             type: "mrkdwn",
-            text: `<@${reviewerId}> rated <@${rating.requesterId}> ${selectedRating} ${'⭐'.repeat(parseInt(selectedRating))}`
+            text: `You rated <@${rating.requesterId}> ${selectedRating} ${'⭐'.repeat(parseInt(selectedRating))}`
           }
         }
       ]
     });
 
+    // Then, notify the requester via DM
+    try {
+      const requesterDm = await client.conversations.open({
+        users: rating.requesterId
+      });
+
+      if (requesterDm.ok && requesterDm.channel) {
+        await client.chat.postMessage({
+          channel: requesterDm.channel.id,
+          text: `<@${reviewerId}> rated you ${selectedRating} ⭐`,
+          blocks: [
+            {
+              type: "context",
+              elements: [
+                {
+                  type: "mrkdwn",
+                  text: `Rating received on <!date^${Math.floor(Date.now() / 1000)}^{date_short_pretty} at {time}|${new Date().toLocaleString()}>`
+                }
+              ]
+            },
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: `<@${reviewerId}> rated you ${selectedRating} ${'⭐'.repeat(parseInt(selectedRating))}`
+              }
+            }
+          ]
+        });
+      }
+    } catch (notifyError) {
+      logger.error('Error notifying requester about rating:', notifyError);
+    }
+
     // Delete the original message
     try {
-      await slackClient.chat.delete({
-        channel: rating.channelId,
+      await client.chat.delete({
+        channel: body.channel.id,
         ts: body.message.ts
       });
     } catch (error) {
