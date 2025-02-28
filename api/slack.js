@@ -265,21 +265,20 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     const channelId = command.channel_id;
     const isDM = isDMChannel(channelId);
 
-    // For DMs, use ephemeral messages as a workaround
     if (isDM) {
       logger.info(`DM channel detected: ${channelId}`);
-      
+
       // Extract mentioned user if provided
       let targetUserId = null;
       if (command.text && command.text.trim()) {
         const mentionText = command.text.trim();
-        
+
         // Extract user ID from mention format: <@USERID>
         const mentionMatch = mentionText.match(/<@([A-Z0-9]+)>/);
         if (mentionMatch) {
           targetUserId = mentionMatch[1];
           logger.info(`User ID extracted from mention: ${targetUserId}`);
-        } 
+        }
         // Handle plain @username format
         else if (mentionText.startsWith('@')) {
           const username = mentionText.substring(1); // Remove the @ symbol
@@ -287,11 +286,11 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
             // Lookup user by username through users.list
             const usersList = await client.users.list();
             const matchingUser = usersList.members.find(
-              member => member.name === username || 
+              member => member.name === username ||
                        member.profile?.display_name === username ||
                        member.real_name === username
             );
-            
+
             if (matchingUser) {
               targetUserId = matchingUser.id;
               logger.info(`User ID found for username ${username}: ${targetUserId}`);
@@ -301,7 +300,7 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
           }
         }
       }
-      
+
       // If no valid target user was found, inform the requester
       if (!targetUserId) {
         await respond({
@@ -310,23 +309,23 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
         });
         return;
       }
-      
+
       // Create the rating in our data store
       store.addRateLimitEntry(commanderId);
       const rating = store.createRating(commanderId, channelId);
-      
+
       logger.info(`New rating request created by ${commanderId} for user ${targetUserId}`);
-      
-      // Use respond to send an ephemeral message with the rating UI
-      await respond({
-        response_type: 'ephemeral',
-        text: `Rate <@${targetUserId}>`,
+
+      // Send a regular message to the DM channel (visible to both users)
+      await client.chat.postMessage({
+        channel: channelId, // DM channel ID
+        text: `<@${commanderId}> has requested a rating from <@${targetUserId}>!`, // Fallback text
         blocks: [
           {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `You requested to rate <@${targetUserId}>`
+              text: `<@${commanderId}> has requested a rating from <@${targetUserId}>!`
             }
           },
           {
@@ -352,7 +351,15 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
               }
             ]
           }
-        ]
+        ],
+        unfurl_links: false,
+        unfurl_media: false
+      });
+
+      // Optionally, send an ephemeral message to confirm the request
+      await respond({
+        response_type: 'ephemeral',
+        text: `Your rating request has been sent to <@${targetUserId}>.`
       });
     } else {
       // Non-DM channel handling (unchanged)
@@ -364,12 +371,12 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
         });
         return;
       }
-      
+
       store.addRateLimitEntry(commanderId);
       const rating = store.createRating(commanderId, channelId);
-      
+
       logger.info(`New rating request created by ${commanderId} in channel ${channelId}`);
-      
+
       await postRatingMessage(client, channelId, commanderId, rating);
     }
   } catch (error) {
