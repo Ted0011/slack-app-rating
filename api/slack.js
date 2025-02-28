@@ -92,7 +92,7 @@ function isDMChannel(channelId) {
   return channelId.startsWith('D');
 }
 
-async function getUserFromDMChannel(client, channelId) {
+/* async function getUserFromDMChannel(client, channelId) {
   try {
     const result = await client.conversations.info({
       channel: channelId,
@@ -104,6 +104,26 @@ async function getUserFromDMChannel(client, channelId) {
       // Exclude the bot's user ID and return the other user's ID
       const botUserId = process.env.SLACK_BOT_USER_ID; // Ensure you have the bot's user ID in your environment variables
       return users.find((user) => user !== botUserId);
+    }
+    return null;
+  } catch (error) {
+    logger.error('Error retrieving user from DM channel:', error);
+    throw error;
+  }
+} */
+
+async function getUserFromDMChannel(client, channelId) {
+  try {
+    // For DMs, we can't use conversations.info to get the users
+    // Instead, we should use conversations.members or just use the channel ID directly
+    const result = await client.conversations.members({
+      channel: channelId,
+    });
+
+    if (result.members && result.members.length === 2) {
+      // Filter out the bot's ID
+      const botUserId = process.env.SLACK_BOT_USER_ID;
+      return result.members.find(member => member !== botUserId);
     }
     return null;
   } catch (error) {
@@ -184,32 +204,27 @@ app.command('/rate', async ({ command, ack, respond, client }) => {
     const isDM = isDMChannel(targetId);
 
     if (isDM) {
-      try {
-        // Retrieve the user ID from the DM channel
-        const userId = await getUserFromDMChannel(slackClient, targetId);
-        if (!userId) {
-          throw new Error('Unable to retrieve user ID from DM channel');
-        }
-
-        // Ensure the bot is part of the DM
-        const channelInfo = await slackClient.conversations.info({ channel: targetId });
-        const users = channelInfo.channel?.users;
-        const botUserId = process.env.SLACK_BOT_USER_ID;
-
-        if (!users || !users.includes(botUserId)) {
-          throw new Error('The bot is not part of this DM. Please add the bot to the DM and try again.');
-        }
-
-        // Use the user ID for DMs
-        targetId = userId;
-      } catch (error) {
-        await respond({
-          response_type: 'ephemeral',
-          text: `⚠️ ${error.message}`
-        });
-        return;
-      }
-    } else {
+  try {
+    // For DMs, we're already in the correct channel, so we can 
+    // just verify the bot has access by checking members
+    const result = await client.conversations.members({
+      channel: targetId,
+    });
+    
+    if (!result.members || !result.members.includes(process.env.SLACK_BOT_USER_ID)) {
+      throw new Error('The bot does not have access to this DM.');
+    }
+    
+    // No need to change targetId - keep using the DM channel ID
+  } catch (error) {
+    logger.error('Error handling DM rate command:', error);
+    await respond({
+      response_type: 'ephemeral',
+      text: `⚠️ ${error.message}`
+    });
+    return;
+  }
+} else {
       // Verify channel access for non-DM channels
       const hasAccess = await verifyChannelAccess(slackClient, targetId);
       if (!hasAccess) {
